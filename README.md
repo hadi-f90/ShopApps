@@ -37,5 +37,18 @@ ShopApps is a modular Python desktop application suite designed to manage all as
 ## Karrayan Focus
 Tailored for office equipment: printers, furniture, stationery — fast sales, supplier tracking, local pricing.
 
+## Development Workflow
+
+1. **Describe** a new feature or sub-app in plain language.
+2. **Product Requirements Agent** generates `spec.md` in `.ai_files/specs/`.
+3. **UI/UX Agent** designs the interface.
+4. **App Logic + Database Agents** implement business rules and models.
+5. **Backend Agent** connects everything.
+6. **Testing, Security, Documentation Agents** finalize.
+
+**Specs Location**: `.ai_files/specs/`
+
+See `.ai_files/roadmap.md` for overall plan and `.claude/skills/` for agent instructions.
+
 ## Development Roadmap
 See [`.ai_files/roadmap.md`](.ai_files/roadmap.md) for Minimum Working State (MVS) per app and future features.
