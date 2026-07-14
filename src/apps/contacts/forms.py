@@ -47,6 +47,17 @@ class ContactForm(QDialog):
         if self.contact:
             self.load_contact_data()
 
+    def _init_type_combo(self) -> None:
+        """
+        Initialize the contact type combo box from the Contact model's
+        contact_type choices so the form stays in sync with the model.
+        """
+        # Expecting Django-style choices: [(value, label), ...]
+        field = Contact._meta.get_field("contact_type")
+        for value, label in field.choices:
+            # Display the human-readable label, store the underlying value
+            self.type_combo.addItem(label, userData=value)
+
     def load_contact_data(self):
         self.name_edit.setText(self.contact.name)
         self.phone_edit.setText(self.contact.phone or "")

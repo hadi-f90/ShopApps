@@ -62,7 +62,7 @@ class ContactsManager(QWidget):
     def add_contact(self):
         dialog = ContactForm(self)
         if dialog.exec() == QDialog.Accepted:
-            self.load_contacts()
+            self.load_data()
 
     def edit_contact(self):
         row = self.table.currentRow()
