@@ -1,18 +1,29 @@
 [project]
-name = "."
+name = "ShopApps"
 version = "0.1.0"
-description = ""
+description = "Integrated desktop apps for Karrayan Office Equipment Store management"
 requires-python = ">=3.11"
 dependencies = [
-    "PySide6",
-    "peewee",
+    "PySide6",           # Qt desktop UI (RTL support)
+    "peewee",            # ORM
+    "python-dotenv",     # Config
+    "openpyxl",          # Excel reports
+    "requests",          # APIs (future Grok)
+    "PyPDF2",            # PDF generation
+    "qtawesome",         # Icons
+    "Pillow",            # Images
 ]
 
 [project.optional-dependencies]
-# Only needed once you actually have a profiled bottleneck to address.
 native = [
     "numba",
     "cython",
+]
+development = [
+    "pytest",
+    "black",
+    "isort",
+    "mypy",
 ]
 
 [build-system]
@@ -20,4 +31,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/."]
+packages = ["src"]
