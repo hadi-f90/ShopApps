@@ -30,6 +30,8 @@ from src.apps.contacts.main import ContactsManager
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        from src.core.db import init_db
+        init_db()
         self.setWindowTitle("شاپ‌اپس - تجهیزات اداری کارایان")
         self.setLayoutDirection(Qt.RightToLeft)
         self.resize(1280, 800)
