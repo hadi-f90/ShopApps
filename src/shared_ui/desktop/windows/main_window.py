@@ -64,7 +64,8 @@ class MainWindow(QMainWindow):
             ("انبار", "fa6.solid.boxes-stacked", 1),
             ("مخاطبین", "fa6.solid.users", 2),
             ("حسابداری", "fa6.solid.receipt", 3),
-            ("شبکه‌های اجتماعی", "fa6.solid.comments", 4),
+            ("گزارش‌ها", "fa6.solid.chart-bar", 4),
+            ("شبکه‌های اجتماعی", "fa6.solid.comments", 5),
         ]
 
         for label, icon_name, index in nav_data:
