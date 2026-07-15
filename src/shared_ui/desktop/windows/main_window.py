@@ -14,8 +14,6 @@ from PySide6.QtWidgets import (
 )
 
 
-
-
 # Icon handling
 try:
     import qtawesome as qta
@@ -30,7 +28,9 @@ from src.apps.contacts.main import ContactsManager
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
         from src.core.db import init_db
+
         init_db()
         self.setWindowTitle("شاپ‌اپس - تجهیزات اداری کارایان")
         self.setLayoutDirection(Qt.RightToLeft)
@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
             ("حسابداری", "fa6.solid.receipt", 3),
             ("گزارش‌ها", "fa6.solid.chart-bar", 4),
             ("شبکه‌های اجتماعی", "fa6.solid.comments", 5),
+            ("پیکربندی", "fa6.solid.settings", 6),
         ]
 
         for label, icon_name, index in nav_data:
@@ -112,6 +113,11 @@ class MainWindow(QMainWindow):
             p = QWidget()
             QVBoxLayout(p).addWidget(QLabel(f"{name}\n\nدر حال توسعه..."))
             self.content_stack.addWidget(p)
+
+        # Settings
+        inv = QWidget()
+        QVBoxLayout(inv).addWidget(QLabel("📦 پیکربندی\n\nدر حال توسعه..."))
+        self.content_stack.addWidget(inv)
 
     def switch_to_module(self, index):
         self.content_stack.setCurrentIndex(index)
