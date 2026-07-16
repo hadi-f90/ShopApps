@@ -20,3 +20,6 @@ native/**/*.c
 
 # OS
 .DS_Store
+*.db
+*.sqlite
+*.sqlite3
