@@ -12,6 +12,7 @@ dependencies = [
     "PyPDF2",            # PDF generation
     "qtawesome",         # Icons
     "Pillow",            # Images
+
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,7 @@ development = [
     "black",
     "isort",
     "mypy",
+    "pytest-qt",
 ]
 
 [build-system]
