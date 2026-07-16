@@ -14,80 +14,95 @@ from PySide6.QtWidgets import (
 )
 
 
-# Icon handling
+
+
+# Safe icon handling
 try:
     import qtawesome as qta
     HAS_ICONS = True
 except ImportError:
     HAS_ICONS = False
-    print("⚠️ qtawesome not installed → pip install qtawesome")
+    print("⚠️ Install qtawesome: pip install qtawesome")
 
 from src.apps.contacts.main import ContactsManager
 
 
 class MainWindow(QMainWindow):
+
     def __init__(self):
         super().__init__()
-
         from src.core.db import init_db
 
         init_db()
         self.setWindowTitle("شاپ‌اپس - تجهیزات اداری کارایان")
         self.setLayoutDirection(Qt.RightToLeft)
-        self.resize(1280, 800)
+        self.resize(1366, 768)
 
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
+        # Sidebar
         self.sidebar = self.create_sidebar()
         main_layout.addWidget(self.sidebar)
 
+        # Content
         self.content_stack = QStackedWidget()
-        main_layout.addWidget(self.content_stack)
+        main_layout.addWidget(self.content_stack, stretch=1)
 
         self.setup_modules()
-        self.switch_to_module(0)
+        self.switch_module(0)
 
     def create_sidebar(self):
         frame = QFrame()
-        frame.setFixedWidth(280)
-        frame.setStyleSheet("background-color: #2c3e50; color: white;")
+        frame.setFixedWidth(270)
+        frame.setStyleSheet("background-color: #2c3e50; color: #ecf0f1;")
         layout = QVBoxLayout(frame)
+        layout.setSpacing(6)
 
+        # Title
         title = QLabel("شاپ‌اپس")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; padding: 20px;")
+        title.setStyleSheet(
+            "font-size: 26px; font-weight: bold; padding: 25px 15px;")
         layout.addWidget(title)
 
-        nav_data = [
-            ("خانه", "fa6.solid.house", 0),
-            ("انبار", "fa6.solid.boxes-stacked", 1),
-            ("مخاطبین", "fa6.solid.users", 2),
-            ("حسابداری", "fa6.solid.receipt", 3),
-            ("گزارش‌ها", "fa6.solid.chart-bar", 4),
-            ("شبکه‌های اجتماعی", "fa6.solid.comments", 5),
-            ("پیکربندی", "fa6.solid.settings", 6),
+        # Navigation
+        nav_items = [
+            ("خانه", 0),
+            ("انبار", 1),
+            ("مخاطبین", 2),
+            ("حسابداری", 3),
+            ("گزارش‌ها", 4),
+            ("شبکه‌های اجتماعی", 5),
+            ("پیکربندی",6)
         ]
 
-        for label, icon_name, index in nav_data:
+        for label, index in nav_items:
+            btn = QPushButton(f"  {label}")
             if HAS_ICONS:
                 try:
-                    icon = qta.icon(icon_name, color="white")
-                    btn = QPushButton(icon, f"  {label}")
-                except Exception:
-                    btn = QPushButton(f"  {label}")
-            else:
-                btn = QPushButton(f"  {label}")
+                    # Safe icon names
+                    icon_map = {
+                        0: "fa5s.home",
+                        1: "fa6s.boxes-stacked",
+                        2: "fa6s.address-book",
+                        3: "fa6s.receipt",
+                        4: "fa6s.chart-line",
+                        5: "fa6.comments",
+                        6: "fa6s.screwdriver-wrench",
+                    }
+                    btn.setIcon(qta.icon(icon_map[index], color="#ecf0f1"))
+                except:
+                    pass  # fallback to text only
 
-            btn.setStyleSheet(
-                """
+            btn.setStyleSheet("""
                 text-align: right;
-                padding: 14px 20px;
+                padding: 16px 20px;
                 border: none;
                 font-size: 15px;
-            """
-            )
-            btn.clicked.connect(lambda _, idx=index: self.switch_to_module(idx))
+            """)
+            btn.clicked.connect(lambda _, i=index: self.switch_module(i))
             layout.addWidget(btn)
 
         layout.addStretch()
@@ -96,30 +111,19 @@ class MainWindow(QMainWindow):
     def setup_modules(self):
         # Dashboard
         dash = QWidget()
-        QVBoxLayout(dash).addWidget(QLabel("🏠 داشبورد\n\nدر حال توسعه..."))
+        QVBoxLayout(dash).addWidget(QLabel("🏠 داشبورد\n\nخلاصه وضعیت"))
         self.content_stack.addWidget(dash)
 
-        # Inventory
-        inv = QWidget()
-        QVBoxLayout(inv).addWidget(QLabel("📦 انبار\n\nدر حال توسعه..."))
-        self.content_stack.addWidget(inv)
-
-        # Contacts
-        self.contacts_page = ContactsManager()
-        self.content_stack.addWidget(self.contacts_page)
-
-        # Accounting & Social
-        for name in ["حسابداری", "شبکه‌های اجتماعی"]:
+        # Placeholders
+        for name in ["انبار", "حسابداری", "گزارش‌ها", "شبکه‌های اجتماعی", "پیکربندی"]:
             p = QWidget()
             QVBoxLayout(p).addWidget(QLabel(f"{name}\n\nدر حال توسعه..."))
             self.content_stack.addWidget(p)
 
-        # Settings
-        inv = QWidget()
-        QVBoxLayout(inv).addWidget(QLabel("📦 پیکربندی\n\nدر حال توسعه..."))
-        self.content_stack.addWidget(inv)
+        self.contacts_widget = ContactsManager()
+        self.content_stack.addWidget(self.contacts_widget)  # index 2
 
-    def switch_to_module(self, index):
+    def switch_module(self, index):
         self.content_stack.setCurrentIndex(index)
 
 
