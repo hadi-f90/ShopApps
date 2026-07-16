@@ -34,7 +34,7 @@ class ContactForm(QDialog):
         self.tasks_edit = QTextEdit()
 
         self.type_combo = QComboBox()
-        self.type_combo.addItems(["customer", "vendor"])
+        self.type_combo.addItems(["customer", "vendor", "staff"])
 
         layout.addRow("نام کامل *:", self.name_edit)
         layout.addRow("تلفن ثابت:", self.phone_edit)

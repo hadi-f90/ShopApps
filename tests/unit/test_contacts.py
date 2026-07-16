@@ -1,5 +1,5 @@
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 from src.apps.contacts.forms import ContactForm
 from src.core.db.models import Contact, db
 
@@ -31,3 +31,15 @@ def test_form_save_new_contact(qtbot):
 def test_security_input_validation():
     # Basic security: name is required (already in form)
     pass  # Can be expanded with more validation
+
+def test_security_name_required_validation(qtbot):
+    """Test that form rejects empty name (security/validation)"""
+    form = ContactForm()
+    form.name_edit.clear()  # Empty name
+    form.mobile_edit.setText("09123456789")
+
+    # Simulate save
+    form.save_contact()
+
+    # Form should not accept (still open)
+    assert not form.result() == QDialog.Accepted
