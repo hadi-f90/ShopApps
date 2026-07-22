@@ -1,11 +1,20 @@
 # Coding & Process Conventions — ShopApps
 
 Companion to `technical-conventions.md`. That file is the source of truth for
-**decisions** (currency, dates, stack, architecture). This file is the source
-of truth for **how code and history are written day to day**. If the two ever
-conflict, `technical-conventions.md` wins on decisions; this file wins on
-style/process. Neither file should restate the other — if you find yourself
-copying a rule between them, delete the copy and cross-reference instead.
+**decisions** (currency, dates, stack, architecture, and — as of this
+revision — secret storage, DB file permissions, and dependency-pinning
+policy). This file is the source of truth for **how code and history are
+written day to day** (naming, git/branching, logging, error handling,
+testing, and the code-level behavioral rules that implement the security
+decisions). If the two ever conflict, `technical-conventions.md` wins on
+decisions; this file wins on style/process. Neither file should restate the
+other — if you find yourself copying a rule between them, delete the copy
+and cross-reference instead.
+
+**Status legend** used below: ✅ already enforced by existing code · 🔜
+planned — the pattern to follow the next time that layer is touched, not yet
+present in the repo. Anything marked 🔜 is a rule for new/changed code, not a
+claim about current code.
 
 ---
 
@@ -30,7 +39,7 @@ copying a rule between them, delete the copy and cross-reference instead.
 - DTOs: `<Entity>DTO` (`ItemDTO`, `StockMovementDTO`). DTOs are
   `@dataclass(frozen=True)` unless a field must be mutated after construction
   — mutability is the exception, justify it in a comment when used.
-- Domain exceptions: see §5.
+- Domain exceptions: see §3.
 
 ### Database fields
 - Boolean flags: `is_<noun>` (`is_customer`, `is_vendor`) — already
@@ -53,7 +62,7 @@ copying a rule between them, delete the copy and cross-reference instead.
 ### Tests
 - `tests/unit/test_<module>.py` — pure logic, no DB/UI fixtures.
 - `tests/integration/test_<module>.py` — service + DB, no UI.
-- `tests/ui/test_<module>.py` — `pytest-qt`, marked `@pytest.mark.ui` (see §6).
+- `tests/ui/test_<module>.py` — `pytest-qt`, marked `@pytest.mark.ui` (see §5).
 - Directory structure mirrors `src/` per sub-app: `tests/unit/inventory/`,
   `tests/integration/inventory/`, not one flat folder.
 
@@ -94,7 +103,7 @@ commit at the end:
 3. `feat(<scope>): service layer wiring`
 4. `test(<scope>): integration tests`
 5. `feat(<scope>): UI` + `test(<scope>): ui tests`
-6. `security(<scope>): review pass` (only if it changed something — see §7)
+6. `security(<scope>): review pass` (only if it changed something — see §6)
 7. `docs(<scope>): update spec checkboxes / roadmap`
 
 This makes `git bisect` and rollback meaningful — right now everything lands
@@ -106,13 +115,20 @@ architecture.
 - [ ] `pytest` passes (unit + integration; UI tests if touched)
 - [ ] No `print()` left in — see §4
 - [ ] No direct cross-app ORM import introduced (Contacts' current debt is
-  the example to *not* repeat — see technical-conventions.md)
-- [ ] Security checklist in §7 reviewed if the change touches input
+  the example to *not* repeat — see `technical-conventions.md`)
+- [ ] Security checklist in §6 reviewed if the change touches input
   handling, file I/O, or SQL
 
 ---
 
 ## 3. Error Handling
+
+**Status: 🔜 planned.** `src/core/errors.py` does not exist yet. This section
+describes the pattern to introduce the next time a service-layer change needs
+to raise a domain error — not a claim that this hierarchy is already in use.
+Until it lands, keep translating `IntegrityError` etc. into plain exceptions
+carrying a Farsi message string, and migrate to the hierarchy below in the
+same change that first needs a second exception subclass.
 
 ### Exception hierarchy
 Add `src/core/errors.py`:
@@ -170,6 +186,11 @@ Two separate concerns — don't merge them:
 
 ## 5. Testing
 
+**Status: 🔜 planned** for the shared fixture and the `ui` marker — neither
+exists in the repo yet; `test_contacts.py` still defines its own
+`setup_database` fixture inline. Introduce the shared version the next time a
+second test file needs a DB fixture, rather than writing a third inline copy.
+
 - Replace the per-file `setup_database` fixture duplicated in
   `test_contacts.py` with a shared `tests/conftest.py`:
   ```python
@@ -202,9 +223,13 @@ Two separate concerns — don't merge them:
 
 ---
 
-## 6. Security — concrete rules, not principles
+## 6. Security — code-level rules
 
-These are hard rules, not guidelines `security-agent` interprets case by case:
+These are behavioral rules for code you write. The underlying policy
+decisions they implement (where secrets live, what permissions the DB file
+gets, when dependencies get pinned) are **decisions**, not style, and now
+live in `technical-conventions.md` under **Security** — see that section for
+the "what." This section covers only the "how":
 
 - **No raw SQL string interpolation, ever.** Peewee's query builder only. If
   a query genuinely needs raw SQL, it must use parameterized `db.execute_sql()`
@@ -214,16 +239,10 @@ These are hard rules, not guidelines `security-agent` interprets case by case:
   `exec`, or dynamically import based on file content.
 - **No `eval`/`exec`/`pickle.loads` on any data that originates outside the
   process**, full stop.
-- **Secrets**: `.env` holds secrets, is gitignored — currently `.gitignore`
-  does **not** list `.env` and no `.env.example` exists in the repo tree
-  shown. Add both before any secret-bearing config lands (this is a real gap
-  today, not a hypothetical).
-- **SQLite file permissions**: on POSIX, `shopapps.db` should be created
-  `0600` (owner read/write only) — not currently enforced anywhere in
-  `core/db/__init__.py`.
-- **Dependency hygiene**: pin versions in `pyproject.toml` before first
-  release build (currently unpinned — `"PySide6"` with no version bound is
-  fine for active dev, risky for a distributed installer).
+
+For the secret-storage mechanism, SQLite file-permission requirement, and
+dependency-pinning timeline this code must comply with, see
+`technical-conventions.md` → Security.
 
 ---
 
@@ -244,5 +263,6 @@ These are hard rules, not guidelines `security-agent` interprets case by case:
 ## Ownership
 This file is maintained by the **Documentation Agent**, same as
 `technical-conventions.md` and `roadmap.md`. Any new pattern introduced by
-another agent that isn't covered here should be added here immediately, not
-left implicit in code.
+another agent that isn't covered here should be added here immediately (with
+a 🔜 status tag if the artifact it depends on doesn't exist yet), not left
+implicit in code.
