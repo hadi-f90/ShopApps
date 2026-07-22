@@ -3,6 +3,9 @@
 Single source of truth for cross-cutting technical decisions. Every `spec.md` and
 `SKILL.md` should defer to this document when in doubt. This supersedes any
 conflicting statements elsewhere (notably older passages in `project_descrition.md`).
+For day-to-day coding style, git workflow, and code-level rules, see
+`.ai_files/coding-conventions.md` — that file implements the decisions below,
+it doesn't redefine them.
 
 ## Stack
 - Python 3.11+
@@ -73,6 +76,27 @@ never mutated anywhere else.
 Qt Linguist workflow: `.ts` source files, compiled `.qm` via
 `pyside6-lupdate` / `lrelease`, under `src/translations/`. `gettext`/Babel are
 not used, to avoid running two i18n systems in parallel.
+
+## Security
+Policy decisions (secret storage, file permissions, dependency pinning). For
+the code-level rules that implement these decisions (no raw SQL, no
+`eval`/`exec`, VCF allowlist parsing, etc.), see `coding-conventions.md` →
+Security.
+
+- **Secrets**: stored in a local `.env` file, loaded via `python-dotenv`
+  (already a `pyproject.toml` dependency). `.env` must be listed in
+  `.gitignore`; a `.env.example` with placeholder keys (no real values) is
+  committed instead, so the required variables are discoverable without
+  exposing anything.
+- **SQLite file permissions**: on POSIX, `shopapps.db` is created with mode
+  `0600` (owner read/write only) at initialization in `core/db`. No group or
+  world access. Windows relies on the OS user-profile ACLs by default; no
+  extra handling needed there for MVS.
+- **Dependency pinning**: dependencies stay loosely versioned in
+  `pyproject.toml` during active MVS development, to keep iteration friction
+  low. Before the first distributed installer build (Phase 2 packaging),
+  every dependency must be pinned to an exact version, so builds are
+  reproducible across machines.
 
 ## Multi-user (future — not MVS)
 Planned model: same-shop LAN with a small local server, not cloud sync.
