@@ -10,7 +10,7 @@ any sub-app's code.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from typing import List, Optional, Protocol
 
 from peewee import IntegrityError
@@ -48,7 +48,6 @@ class ItemDTO:
     low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD
     is_active: bool = True
     on_hand_quantity: int = 0  # store-wide, computed — not a persisted column
-    expiration_date: Optional[date] = None  # None = doesn't expire
 
 
 @dataclass(frozen=True)
@@ -82,7 +81,6 @@ class InventoryService(Protocol):
         vendor: str = "",
         tags: str = "",
         low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD,
-        expiration_date: Optional[date] = None,
     ) -> ItemDTO: ...
 
     def update_item(self, item_id: int, **fields) -> ItemDTO: ...
@@ -106,10 +104,6 @@ class InventoryService(Protocol):
     ) -> int: ...
 
     def get_low_stock_items(self) -> List[ItemDTO]: ...
-
-    def get_expiring_items(
-        self, reference_date: date, warning_days: int = logic.DEFAULT_EXPIRATION_WARNING_DAYS
-    ) -> List[ItemDTO]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +133,6 @@ class LocalInventoryService:
             low_stock_threshold=item.low_stock_threshold,
             is_active=item.is_active,
             on_hand_quantity=self.get_on_hand_quantity(item.id),
-            expiration_date=item.expiration_date,
         )
 
     def _to_movement_dto(self, m: StockMovement) -> StockMovementDTO:
@@ -182,7 +175,6 @@ class LocalInventoryService:
         vendor: str = "",
         tags: str = "",
         low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD,
-        expiration_date: Optional[date] = None,
     ) -> ItemDTO:
         errors = logic.validate_item_fields(
             name, purchase_price, sale_price, low_stock_threshold
@@ -197,7 +189,6 @@ class LocalInventoryService:
             vendor=vendor or None,
             tags=tags or None,
             low_stock_threshold=low_stock_threshold,
-            expiration_date=expiration_date,
         )
         return self._to_item_dto(item)
 
@@ -227,7 +218,6 @@ class LocalInventoryService:
             "tags",
             "low_stock_threshold",
             "is_active",
-            "expiration_date",
         ):
             if field_name in fields:
                 setattr(item, field_name, fields[field_name])
@@ -303,19 +293,4 @@ class LocalInventoryService:
         return [
             dto for dto in candidates
             if logic.is_low_stock(dto.on_hand_quantity, dto.low_stock_threshold)
-        ]
-
-    def get_expiring_items(
-        self, reference_date: date, warning_days: int = logic.DEFAULT_EXPIRATION_WARNING_DAYS
-    ) -> List[ItemDTO]:
-        candidates = (
-            self._to_item_dto(i)
-            for i in Item.select().where(
-                (Item.is_active == True) & (Item.expiration_date.is_null(False))  # noqa: E712
-            )
-        )
-        return [
-            dto
-            for dto in candidates
-            if logic.is_expiring_soon(dto.expiration_date, reference_date, warning_days)
         ]
