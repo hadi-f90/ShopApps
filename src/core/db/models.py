@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from peewee import (
+    BooleanField,
     CharField,
     DateTimeField,
     ForeignKeyField,
@@ -10,7 +11,27 @@ from peewee import (
     TextField,
 )
 
-db = SqliteDatabase('shopapps.db')
+# WAL + busy_timeout + foreign_keys must be set at construction time.
+# SQLite silently ignores on_delete constraints (see StockMovement below)
+# unless PRAGMA foreign_keys=1 is active on every connection.
+db = SqliteDatabase(
+    "shopapps.db",
+    pragmas={
+        "journal_mode": "wal",
+        "busy_timeout": 5000,
+        "foreign_keys": 1,
+    },
+)
+
+
+def _utcnow_naive() -> datetime:
+    """Timezone-aware UTC 'now', stripped back to naive before storage.
+
+    datetime.utcnow() is deprecated (Python 3.12+). This keeps the exact
+    same on-disk representation (naive UTC, per technical-conventions.md's
+    'Gregorian storage' rule) while avoiding the deprecated call.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class BaseModel(Model):
@@ -20,79 +41,48 @@ class BaseModel(Model):
 
 class Contact(BaseModel):
     name = CharField(null=False)
-    phone = CharField(null=True)           # Fixed phone
-    mobile = CharField(null=True)          # Mobile
+    phone = CharField(null=True)  # Fixed phone
+    mobile = CharField(null=True)  # Mobile
     email = CharField(null=True)
-    organization = CharField(null=True)    # Company
-    title = CharField(null=True)           # Role / Position
+    organization = CharField(null=True)  # Company
+    title = CharField(null=True)  # Role / Position
     address = TextField(null=True)
-    contact_type = CharField(default='customer')
+    contact_type = CharField(default="customer")
     tags = CharField(null=True)
-    note = TextField(null=True)            # Notes
-    tasks = TextField(null=True)           # Future tasks/projects
+    note = TextField(null=True)  # Notes
+    tasks = TextField(null=True)  # Future tasks/projects
 
-
-# ---------------------------------------------------------------------------
-# Inventory models — see .ai_files/specs/inventory-mvs-spec.md
-# Currency: Rial integers only (technical-conventions.md). Toman is a
-# display-only conversion done at the UI boundary — never stored here.
-# ---------------------------------------------------------------------------
 
 class Warehouse(BaseModel):
-    name = CharField(null=False, unique=True)
+    name = CharField(unique=True, null=False, index=True)
     location = CharField(null=True)
-    note = TextField(null=True)
+    is_active = BooleanField(default=True)
 
 
 class Item(BaseModel):
     name = CharField(null=False, index=True)
-    purchase_price = IntegerField(default=0)   # Rial
-    sale_price = IntegerField(default=0)       # Rial
+    # Rial integers only, per technical-conventions.md. Toman is
+    # display-only and computed at the UI boundary — never stored.
+    purchase_price = IntegerField(default=0)
+    sale_price = IntegerField(default=0)
     brand = CharField(null=True)
-    vendor = CharField(null=True)              # Plain field for MVS; may
-    # become a ForeignKeyField(Contact, is_vendor=True) once core/services
-    # exists and cross-app FK access goes through it rather than direct ORM.
+    # Plain CharField, not a FK to Contact, until the Contacts service
+    # protocol / core-services seam exists (see architectural-debt note).
+    vendor = CharField(null=True)
     tags = CharField(null=True, index=True)
-    low_stock_threshold = IntegerField(default=5)  # per-item override, spec default = 5
+    low_stock_threshold = IntegerField(default=5)
+    is_active = BooleanField(default=True)
 
 
 class StockMovement(BaseModel):
-    """
-    Append-only ledger. Stock quantity is NEVER mutated directly — every
-    change is a row here. On-hand quantity for an item/warehouse is always
-    the sum of its movements (see Item.on_hand / StockMovement.on_hand_for).
-    """
+    """Append-only ledger. Never edited or deleted by application code —
+    on_delete='RESTRICT' protects the audit trail at the DB constraint
+    level as long as the foreign_keys pragma above is active."""
 
-    MOVEMENT_TYPES = (
-        ('purchase', 'purchase'),                     # +
-        ('sale', 'sale'),                              # -
-        ('internal_consumption', 'internal_consumption'),  # -
-        ('spoilage', 'spoilage'),                      # -
-        ('manual_adjustment', 'manual_adjustment'),    # +/-
-    )
-
-    item = ForeignKeyField(Item, backref='movements', on_delete='CASCADE')
-    warehouse = ForeignKeyField(Warehouse, backref='movements', on_delete='CASCADE')
-    quantity_delta = IntegerField(null=False)  # signed; sign convention enforced
-    # by App Logic Agent, not here (e.g. 'sale' must be negative). This layer
-    # only stores what it's given.
-    movement_type = CharField(choices=MOVEMENT_TYPES, null=False)
-    timestamp = DateTimeField(default=datetime.utcnow)  # Gregorian storage;
-    # Jalali conversion happens only at the UI boundary.
-    reference = CharField(null=True)  # e.g. receipt id / purchase id
+    item = ForeignKeyField(Item, backref="movements", on_delete="RESTRICT")
+    warehouse = ForeignKeyField(Warehouse, backref="movements", on_delete="RESTRICT")
+    quantity_delta = IntegerField(null=False)
+    movement_type = CharField(null=False, index=True)
+    timestamp = DateTimeField(default=_utcnow_naive, index=True)
+    reference = CharField(null=True)  # receipt id / purchase id
     note = TextField(null=True)
-
-    @staticmethod
-    def on_hand_for(item: Item, warehouse: Warehouse) -> int:
-        """Sum of movement deltas for one item in one warehouse. Basic
-        derived-quantity query only — validation rules (e.g. can't sell more
-        than on-hand) belong to App Logic Agent, not here."""
-        total = (
-            StockMovement
-            .select()
-            .where(
-                (StockMovement.item == item)
-                & (StockMovement.warehouse == warehouse)
-            )
-        )
-        return sum(m.quantity_delta for m in total)

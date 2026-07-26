@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFontDatabase,QTextLayout, QPageLayout
+from PySide6.QtGui import QColor, QFontDatabase, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
-    QLayout,
 )
 
 # Icon handling
@@ -25,6 +24,7 @@ except ImportError:
     print("⚠️ qtawesome not installed → pip install qtawesome")
 
 from src.apps.contacts.main import ContactsManager
+from src.apps.inventory.main import InventoryManager
 
 
 def load_fonts():
@@ -40,6 +40,37 @@ def load_fonts():
                 print(f"✓ Loaded font: {font_file.name}")
     else:
         print(f"⚠️ Fonts directory not found: {fonts_dir}")
+
+
+def apply_light_palette(app: QApplication):
+    """Force a fixed light palette app-wide, independent of the OS theme.
+
+    ShopApps is a controlled offline business tool with its own explicit
+    stylesheet (dark sidebar, light content area). Without this, widgets
+    that don't get an explicit stylesheet rule (QLineEdit, QTableView,
+    QComboBox, form dialogs, etc.) fall back to Qt's *native* palette —
+    which follows the OS theme. On a dark-mode OS that means light text on
+    a light widget background, or the hardcoded `color: #333333` QLabel
+    rule from the stylesheet rendering as near-black text on a near-black
+    background. Setting an explicit palette here removes that dependency;
+    a real dark-mode *option* (as a deliberate, tested theme) is future
+    Phase 2 scope, not something we want happening implicitly via the OS.
+    """
+    app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor("#f5f5f5"))
+    palette.setColor(QPalette.WindowText, QColor("#222222"))
+    palette.setColor(QPalette.Base, QColor("#ffffff"))
+    palette.setColor(QPalette.AlternateBase, QColor("#f0f0f0"))
+    palette.setColor(QPalette.Text, QColor("#222222"))
+    palette.setColor(QPalette.Button, QColor("#e8e8e8"))
+    palette.setColor(QPalette.ButtonText, QColor("#222222"))
+    palette.setColor(QPalette.ToolTipBase, QColor("#ffffe1"))
+    palette.setColor(QPalette.ToolTipText, QColor("#222222"))
+    palette.setColor(QPalette.Highlight, QColor("#2c3e50"))
+    palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    palette.setColor(QPalette.PlaceholderText, QColor("#8a8a8a"))
+    app.setPalette(palette)
 
 
 def create_app_stylesheet():
@@ -84,10 +115,6 @@ def create_app_stylesheet():
 
         QPushButton:pressed {
             background-color: #1a252f;
-        }
-
-        QLabel {
-            color: #333333;
         }
     """
 
@@ -146,18 +173,12 @@ class MainWindow(QMainWindow):
                     icon = qta.icon(icon_name, color="white")
                     btn = QPushButton(icon, f"{label}")
                     btn.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-                    print("try ran")
                 except Exception:
                     btn = QPushButton(f"{label}")
-                    print("except ran")
             else:
                 btn = QPushButton(f"{label}")
-                print("else ran")
 
             btn.clicked.connect(lambda _, idx=index: self.switch_to_module(idx))
-            print(f"Button text: {btn.text()}")
-            print(f"Button layout direction: {btn.layoutDirection()}")
-            print(f"Button icon size: {btn.iconSize()}")
             layout.addWidget(btn)
 
         layout.addStretch()
@@ -171,9 +192,8 @@ class MainWindow(QMainWindow):
         self.content_stack.addWidget(dash)
 
         # Inventory
-        inv = QWidget()
-        QVBoxLayout(inv).addWidget(QLabel("📦 انبار\n\nدر حال توسعه..."))
-        self.content_stack.addWidget(inv)
+        self.inventory_page = InventoryManager()
+        self.content_stack.addWidget(self.inventory_page)
 
         # Contacts
         self.contacts_page = ContactsManager()
@@ -199,6 +219,10 @@ if __name__ == "__main__":
 
     # Load custom fonts
     load_fonts()
+
+    # Force a fixed light palette before applying the stylesheet, so the
+    # UI is immune to the OS's dark/light mode setting (see docstring).
+    apply_light_palette(app)
 
     # Apply app-level stylesheet
     app.setStyleSheet(create_app_stylesheet())
