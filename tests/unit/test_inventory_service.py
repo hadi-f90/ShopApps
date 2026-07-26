@@ -81,6 +81,17 @@ def test_duplicate_warehouse_name_rejected(service):
         service.create_warehouse(name="انبار مرکزی")
 
 
+def test_high_value_item_price_survives_round_trip(service):
+    """Regression test for the QSpinBox 32-bit overflow bug: a price well
+    above the old ~2.1 billion Rial ceiling must save and read back intact."""
+    item = service.create_item(
+        name="دستگاه کپی صنعتی", purchase_price=45_000_000_000, sale_price=60_000_000_000
+    )
+    fetched = service.get_item(item.id)
+    assert fetched.purchase_price == 45_000_000_000
+    assert fetched.sale_price == 60_000_000_000
+
+
 def test_stock_movement_ledger_blocks_item_deletion():
     """Append-only ledger: deleting an item referenced by a movement must be
     blocked by the RESTRICT foreign key (requires PRAGMA foreign_keys=1,

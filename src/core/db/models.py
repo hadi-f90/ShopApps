@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from peewee import (
     BooleanField,
@@ -22,6 +22,16 @@ db = SqliteDatabase(
         "foreign_keys": 1,
     },
 )
+
+
+def _utcnow_naive() -> datetime:
+    """Timezone-aware UTC 'now', stripped back to naive before storage.
+
+    datetime.utcnow() is deprecated (Python 3.12+). This keeps the exact
+    same on-disk representation (naive UTC, per technical-conventions.md's
+    'Gregorian storage' rule) while avoiding the deprecated call.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class BaseModel(Model):
@@ -73,6 +83,6 @@ class StockMovement(BaseModel):
     warehouse = ForeignKeyField(Warehouse, backref="movements", on_delete="RESTRICT")
     quantity_delta = IntegerField(null=False)
     movement_type = CharField(null=False, index=True)
-    timestamp = DateTimeField(default=datetime.utcnow, index=True)
+    timestamp = DateTimeField(default=_utcnow_naive, index=True)
     reference = CharField(null=True)  # receipt id / purchase id
     note = TextField(null=True)

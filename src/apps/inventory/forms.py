@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
@@ -18,6 +19,22 @@ from src.core.services.inventory_service import (
     WarehouseDTO,
 )
 
+# QSpinBox wraps a 32-bit C int (max ~2.1 billion) — too small for Rial
+# amounts, which routinely run into the billions for higher-value office
+# equipment (a printer at 45,000,000 Rial is unremarkable). QDoubleSpinBox
+# uses a C double internally, so it comfortably holds integer Rial values
+# up to ~10^12 with 0 decimal places shown and stored.
+MAX_RIAL_AMOUNT = 999_999_999_999
+
+
+def _rial_spinbox() -> QDoubleSpinBox:
+    box = QDoubleSpinBox()
+    box.setDecimals(0)
+    box.setRange(0, MAX_RIAL_AMOUNT)
+    box.setSuffix(" ریال")
+    box.setGroupSeparatorShown(True)
+    return box
+
 
 class ItemForm(QDialog):
     def __init__(self, service: InventoryService, parent=None, item: ItemDTO = None):
@@ -34,13 +51,8 @@ class ItemForm(QDialog):
         self.vendor_edit = QLineEdit()
         self.tags_edit = QLineEdit()
 
-        self.purchase_price_edit = QSpinBox()
-        self.purchase_price_edit.setRange(0, 10_000_000_000)
-        self.purchase_price_edit.setSuffix(" ریال")
-
-        self.sale_price_edit = QSpinBox()
-        self.sale_price_edit.setRange(0, 10_000_000_000)
-        self.sale_price_edit.setSuffix(" ریال")
+        self.purchase_price_edit = _rial_spinbox()
+        self.sale_price_edit = _rial_spinbox()
 
         self.threshold_edit = QSpinBox()
         self.threshold_edit.setRange(0, 1_000_000)
@@ -81,8 +93,8 @@ class ItemForm(QDialog):
                 self.service.update_item(
                     self.item.id,
                     name=self.name_edit.text(),
-                    purchase_price=self.purchase_price_edit.value(),
-                    sale_price=self.sale_price_edit.value(),
+                    purchase_price=int(self.purchase_price_edit.value()),
+                    sale_price=int(self.sale_price_edit.value()),
                     brand=self.brand_edit.text(),
                     vendor=self.vendor_edit.text(),
                     tags=self.tags_edit.text(),
@@ -91,8 +103,8 @@ class ItemForm(QDialog):
             else:
                 self.service.create_item(
                     name=self.name_edit.text(),
-                    purchase_price=self.purchase_price_edit.value(),
-                    sale_price=self.sale_price_edit.value(),
+                    purchase_price=int(self.purchase_price_edit.value()),
+                    sale_price=int(self.sale_price_edit.value()),
                     brand=self.brand_edit.text(),
                     vendor=self.vendor_edit.text(),
                     tags=self.tags_edit.text(),
