@@ -1,0 +1,312 @@
+"""
+Backend service layer for Inventory.
+
+Wires the App Logic rules (src/apps/inventory/inventory_logic.py) to
+persisted data (Peewee models in src/core/db/models.py) and exposes a
+narrow Protocol interface so UI code — and later, other sub-apps such as
+Accounting — never import ORM models directly. This is the seam that will
+let a future remote (LAN) implementation be substituted without changing
+any sub-app's code.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional, Protocol
+
+from peewee import IntegrityError
+from src.apps.inventory import inventory_logic as logic
+from src.core.db.models import Item, StockMovement, Warehouse, db
+
+
+class InventoryServiceError(Exception):
+    """Domain error surfaced to the UI layer. Message text is Farsi-facing."""
+
+
+# ---------------------------------------------------------------------------
+# DTOs — plain dataclasses. Peewee model instances never cross this boundary.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WarehouseDTO:
+    id: Optional[int]
+    name: str
+    location: str = ""
+    is_active: bool = True
+
+
+@dataclass(frozen=True)
+class ItemDTO:
+    id: Optional[int]
+    name: str
+    purchase_price: int  # Rial
+    sale_price: int  # Rial
+    brand: str = ""
+    vendor: str = ""
+    tags: str = ""
+    low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD
+    is_active: bool = True
+    on_hand_quantity: int = 0  # store-wide, computed — not a persisted column
+
+
+@dataclass(frozen=True)
+class StockMovementDTO:
+    id: Optional[int]
+    item_id: int
+    warehouse_id: int
+    quantity_delta: int
+    movement_type: str
+    timestamp: Optional[datetime] = None
+    reference: str = ""
+    note: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Protocol
+# ---------------------------------------------------------------------------
+
+
+class InventoryService(Protocol):
+    @staticmethod
+    def create_warehouse(name: str, location: str = "") -> WarehouseDTO:
+        pass
+
+    @staticmethod
+    def list_warehouses() -> List[WarehouseDTO]:
+        pass
+
+    @staticmethod
+    def create_item(
+        name: str,
+        purchase_price: int,
+        sale_price: int,
+        brand: str = "",
+        vendor: str = "",
+        tags: str = "",
+        low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD,
+    ) -> ItemDTO:
+        pass
+
+    @staticmethod
+    def update_item(item_id: int, **fields) -> ItemDTO:
+        pass
+
+    @staticmethod
+    def list_items(search: str = "") -> List[ItemDTO]:
+        pass
+
+    @staticmethod
+    def get_item(item_id: int) -> ItemDTO:
+        pass
+
+    @staticmethod
+    def record_movement(
+        item_id: int,
+        warehouse_id: int,
+        quantity_delta: int,
+        movement_type: str,
+        reference: str = "",
+        note: str = "",
+    ) -> StockMovementDTO:
+        pass
+
+    @staticmethod
+    def get_on_hand_quantity(item_id: int, warehouse_id: Optional[int] = None) -> int:
+        pass
+
+    @staticmethod
+    def get_low_stock_items() -> List[ItemDTO]:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Local (in-process) implementation — the only one that exists for MVS.
+# ---------------------------------------------------------------------------
+
+
+class LocalInventoryService:
+    """Direct in-process Peewee-backed implementation of InventoryService."""
+
+    # -- DTO translation --------------------------------------------------
+
+    @staticmethod
+    def _to_warehouse_dto(w: Warehouse) -> WarehouseDTO:
+        return WarehouseDTO(id=w.id, name=w.name, location=w.location or "", is_active=w.is_active)
+
+    @classmethod
+    def _to_item_dto(cls, item: Item) -> ItemDTO:
+        return ItemDTO(
+            id=item.id,
+            name=item.name,
+            purchase_price=item.purchase_price,
+            sale_price=item.sale_price,
+            brand=item.brand or "",
+            vendor=item.vendor or "",
+            tags=item.tags or "",
+            low_stock_threshold=item.low_stock_threshold,
+            is_active=item.is_active,
+            on_hand_quantity=cls.get_on_hand_quantity(item.id),
+        )
+
+    @staticmethod
+    def _to_movement_dto(m: StockMovement) -> StockMovementDTO:
+        return StockMovementDTO(
+            id=m.id,
+            item_id=m.item_id,
+            warehouse_id=m.warehouse_id,
+            quantity_delta=m.quantity_delta,
+            movement_type=m.movement_type,
+            timestamp=m.timestamp,
+            reference=m.reference or "",
+            note=m.note or "",
+        )
+
+    # -- Warehouses ---------------------------------------------------------
+
+    @classmethod
+    def create_warehouse(cls, name: str, location: str = "") -> WarehouseDTO:
+        errors = logic.validate_warehouse_fields(name)
+        if errors:
+            raise InventoryServiceError("؛ ".join(errors))
+        try:
+            w = Warehouse.create(name=name.strip(), location=location or None)
+        except IntegrityError:
+            raise InventoryServiceError("انباری با این نام از قبل وجود دارد")
+        return cls._to_warehouse_dto(w)
+
+    @classmethod
+    def list_warehouses(cls) -> List[WarehouseDTO]:
+        return [cls._to_warehouse_dto(w) for w in Warehouse.select().order_by(Warehouse.name)]
+
+    # -- Items ----------------------------------------------------------------
+
+    @classmethod
+    def create_item(
+        cls,
+        name: str,
+        purchase_price: int,
+        sale_price: int,
+        brand: str = "",
+        vendor: str = "",
+        tags: str = "",
+        expiration: str = "",
+        low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD,
+    ) -> ItemDTO:
+        errors = logic.validate_item_fields(name, purchase_price, sale_price, low_stock_threshold, expiration)
+        if errors:
+            raise InventoryServiceError("؛ ".join(errors))
+        item = Item.create(
+            name=name.strip(),
+            purchase_price=purchase_price,
+            sale_price=sale_price,
+            brand=brand or None,
+            vendor=vendor or None,
+            expiration=expiration or None,
+            tags=tags or None,
+            low_stock_threshold=low_stock_threshold,
+        )
+        return cls._to_item_dto(item)
+
+    @classmethod
+    def update_item(cls, item_id: int, **fields) -> ItemDTO:
+        try:
+            item = Item.get_by_id(item_id)
+        except Item.DoesNotExist:
+            raise InventoryServiceError("کالای مورد نظر یافت نشد")
+        name = fields.get("name", item.name)
+        purchase_price = fields.get("purchase_price", item.purchase_price)
+        sale_price = fields.get("sale_price", item.sale_price)
+        low_stock_threshold = fields.get("low_stock_threshold", item.low_stock_threshold)
+        errors = logic.validate_item_fields(name, purchase_price, sale_price, low_stock_threshold)
+        if errors:
+            raise InventoryServiceError("؛ ".join(errors))
+        for field_name in (
+            "name",
+            "purchase_price",
+            "sale_price",
+            "brand",
+            "vendor",
+            "tags",
+            "low_stock_threshold",
+            "expiration",
+            "is_active",
+        ):
+            if field_name in fields:
+                setattr(item, field_name, fields[field_name])
+        item.save()
+        return cls._to_item_dto(item)
+
+    @classmethod
+    def list_items(cls, search: str = "") -> List[ItemDTO]:
+        query = Item.select()
+        if search:
+            query = query.where(
+                Item.name.contains(search)
+                | Item.tags.contains(search)
+                | Item.brand.contains(search)
+            )
+        return [cls._to_item_dto(i) for i in query.order_by(Item.name)]
+
+    @classmethod
+    def get_item(cls, item_id: int) -> ItemDTO:
+        try:
+            item = Item.get_by_id(item_id)
+        except Item.DoesNotExist:
+            raise InventoryServiceError("کالای مورد نظر یافت نشد")
+        return cls._to_item_dto(item)
+
+    # -- Stock movements --------------------------------------------------------
+
+    @classmethod
+    def record_movement(
+        cls,
+        item_id: int,
+        warehouse_id: int,
+        quantity_delta: int,
+        movement_type: str,
+        reference: str = "",
+        note: str = "",
+    ) -> StockMovementDTO:
+        try:
+            logic.validate_movement_sign(movement_type, quantity_delta)
+        except logic.InventoryLogicError as exc:
+            raise InventoryServiceError(str(exc))
+
+        if quantity_delta < 0:
+            on_hand = cls.get_on_hand_quantity(item_id, warehouse_id)
+            try:
+                logic.validate_sale_does_not_exceed_stock(on_hand, quantity_delta)
+            except logic.InventoryLogicError as exc:
+                raise InventoryServiceError(str(exc))
+
+        with db.atomic():
+            try:
+                movement = StockMovement.create(
+                    item=item_id,
+                    warehouse=warehouse_id,
+                    quantity_delta=quantity_delta,
+                    movement_type=movement_type,
+                    reference=reference or None,
+                    note=note or None,
+                )
+            except IntegrityError:
+                raise InventoryServiceError(
+                    "ثبت تراکنش ناموفق بود: کالا یا انبار مورد نظر معتبر نیست"
+                )
+        return cls._to_movement_dto(movement)
+
+    @staticmethod
+    def get_on_hand_quantity(item_id: int, warehouse_id: Optional[int] = None) -> int:
+        query = StockMovement.select().where(StockMovement.item == item_id)
+        if warehouse_id is not None:
+            query = query.where(StockMovement.warehouse == warehouse_id)
+        return logic.compute_on_hand_quantity((m.quantity_delta for m in query))
+
+    @classmethod
+    def get_low_stock_items(cls) -> List[ItemDTO]:
+        candidates = (cls._to_item_dto(i) for i in Item.select().where(Item.is_active is True))
+        return [
+            dto
+            for dto in candidates
+            if logic.is_low_stock(dto.on_hand_quantity, dto.low_stock_threshold)
+        ]

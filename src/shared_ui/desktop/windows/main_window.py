@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFontDatabase,QTextLayout, QPageLayout
+from PySide6.QtGui import QFontDatabase, QTextLayout, QPageLayout
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -25,6 +25,7 @@ except ImportError:
     print("⚠️ qtawesome not installed → pip install qtawesome")
 
 from src.apps.contacts.main import ContactsManager
+from src.apps.inventory.main import InventoryManager
 
 
 def load_fonts():
@@ -146,18 +147,12 @@ class MainWindow(QMainWindow):
                     icon = qta.icon(icon_name, color="white")
                     btn = QPushButton(icon, f"{label}")
                     btn.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-                    print("try ran")
                 except Exception:
                     btn = QPushButton(f"{label}")
-                    print("except ran")
             else:
                 btn = QPushButton(f"{label}")
-                print("else ran")
 
             btn.clicked.connect(lambda _, idx=index: self.switch_to_module(idx))
-            print(f"Button text: {btn.text()}")
-            print(f"Button layout direction: {btn.layoutDirection()}")
-            print(f"Button icon size: {btn.iconSize()}")
             layout.addWidget(btn)
 
         layout.addStretch()
@@ -171,9 +166,8 @@ class MainWindow(QMainWindow):
         self.content_stack.addWidget(dash)
 
         # Inventory
-        inv = QWidget()
-        QVBoxLayout(inv).addWidget(QLabel("📦 انبار\n\nدر حال توسعه..."))
-        self.content_stack.addWidget(inv)
+        self.inventory_page = InventoryManager()
+        self.content_stack.addWidget(self.inventory_page)
 
         # Contacts
         self.contacts_page = ContactsManager()

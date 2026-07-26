@@ -8,6 +8,8 @@ from peewee import (
     Model,
     SqliteDatabase,
     TextField,
+    BooleanField,
+
 )
 
 db = SqliteDatabase('shopapps.db')
@@ -41,6 +43,7 @@ class Contact(BaseModel):
 class Warehouse(BaseModel):
     name = CharField(null=False, unique=True)
     location = CharField(null=True)
+    is_active = BooleanField(default=True)
     note = TextField(null=True)
 
 
@@ -54,6 +57,9 @@ class Item(BaseModel):
     # exists and cross-app FK access goes through it rather than direct ORM.
     tags = CharField(null=True, index=True)
     low_stock_threshold = IntegerField(default=5)  # per-item override, spec default = 5
+    is_active = BooleanField(default=True)
+    expiration = DateTimeField(default=datetime.utcnow)  # Gregorian storage;
+
 
 
 class StockMovement(BaseModel):
@@ -61,6 +67,9 @@ class StockMovement(BaseModel):
     Append-only ledger. Stock quantity is NEVER mutated directly — every
     change is a row here. On-hand quantity for an item/warehouse is always
     the sum of its movements (see Item.on_hand / StockMovement.on_hand_for).
+    Never edited or deleted by application code —
+    on_delete='RESTRICT' protects the audit trail at the DB constraint
+    level as long as the foreign_keys pragma above is active.
     """
 
     MOVEMENT_TYPES = (
@@ -71,12 +80,12 @@ class StockMovement(BaseModel):
         ('manual_adjustment', 'manual_adjustment'),    # +/-
     )
 
-    item = ForeignKeyField(Item, backref='movements', on_delete='CASCADE')
-    warehouse = ForeignKeyField(Warehouse, backref='movements', on_delete='CASCADE')
+    item = ForeignKeyField(Item, backref='movements', on_delete="RESTRICT")#on_delete='CASCADE')
+    warehouse = ForeignKeyField(Warehouse, backref='movements', on_delete="RESTRICT")#on_delete='CASCADE')
     quantity_delta = IntegerField(null=False)  # signed; sign convention enforced
     # by App Logic Agent, not here (e.g. 'sale' must be negative). This layer
     # only stores what it's given.
-    movement_type = CharField(choices=MOVEMENT_TYPES, null=False)
+    movement_type = CharField(choices=MOVEMENT_TYPES, null=False, index=True)
     timestamp = DateTimeField(default=datetime.utcnow)  # Gregorian storage;
     # Jalali conversion happens only at the UI boundary.
     reference = CharField(null=True)  # e.g. receipt id / purchase id
