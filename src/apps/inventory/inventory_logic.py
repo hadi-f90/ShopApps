@@ -9,10 +9,17 @@ Monetary inputs/outputs are always Rial integers (see
 .ai_files/technical-conventions.md); Toman conversion happens only in
 functions explicitly marked as display formatting.
 """
-
+from datetime import date, datetime, timedelta
+import random
 from typing import Iterable, List, Optional
 
+def random_future_date():
+    today = datetime.now()
+    random_days = random.randint(1, 1825)  # Up to ~5 years
+    return today + timedelta(days=random_days)
+
 DEFAULT_LOW_STOCK_THRESHOLD = 5
+DEFAULT_EXPIRATION_WARNING_DAYS = random_future_date()
 
 # MVS movement types and the sign each one requires.
 # None means "either sign is valid" — only manual_adjustment allows this.

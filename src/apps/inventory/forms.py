@@ -1,14 +1,20 @@
+from datetime import date, timedelta
+
+from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
     QTextEdit,
-    QDateEdit,
+    QWidget,
 )
 
 from src.apps.inventory import inventory_logic as logic
@@ -18,6 +24,7 @@ from src.core.services.inventory_service import (
     ItemDTO,
     WarehouseDTO,
 )
+from src.core.utils.jalali import gregorian_to_jalali_display
 
 
 class ItemForm(QDialog):
@@ -34,7 +41,6 @@ class ItemForm(QDialog):
         self.brand_edit = QLineEdit()
         self.vendor_edit = QLineEdit()
         self.tags_edit = QLineEdit()
-        self.expiration = QDateEdit(),
 
         self.purchase_price_edit = QSpinBox()
         self.purchase_price_edit.setRange(0, 10_000_000_000)
@@ -48,14 +54,36 @@ class ItemForm(QDialog):
         self.threshold_edit.setRange(0, 1_000_000)
         self.threshold_edit.setValue(logic.DEFAULT_LOW_STOCK_THRESHOLD)
 
+        # Expiration date — optional; most items (furniture, cables) never
+        # expire. QDateEdit itself works in Gregorian (Qt has no native
+        # Jalali calendar), so we show a live Jalali-equivalent label next
+        # to it — storage stays Gregorian, display stays Jalali, per
+        # technical-conventions.md.
+        self.has_expiration_checkbox = QCheckBox("دارای تاریخ انقضا")
+        self.expiration_edit = QDateEdit()
+        self.expiration_edit.setCalendarPopup(True)
+        self.expiration_edit.setDate(QDate.currentDate())
+        self.expiration_edit.setEnabled(False)
+        self.expiration_jalali_label = QLabel("")
+        self.has_expiration_checkbox.toggled.connect(self.expiration_edit.setEnabled)
+        self.has_expiration_checkbox.toggled.connect(self._update_expiration_jalali_label)
+        self.expiration_edit.dateChanged.connect(self._update_expiration_jalali_label)
+
+        expiration_row = QWidget()
+        expiration_row_layout = QHBoxLayout(expiration_row)
+        expiration_row_layout.setContentsMargins(0, 0, 0, 0)
+        expiration_row_layout.addWidget(self.expiration_edit)
+        expiration_row_layout.addWidget(self.expiration_jalali_label)
+
         layout.addRow("نام کالا *:", self.name_edit)
         layout.addRow("قیمت خرید:", self.purchase_price_edit)
         layout.addRow("قیمت فروش:", self.sale_price_edit)
         layout.addRow("برند:", self.brand_edit)
         layout.addRow("فروشنده/تامین‌کننده:", self.vendor_edit)
-        layout.addRow("تاریخ انقضاء:", self.expiration)
         layout.addRow("تگ‌ها:", self.tags_edit)
         layout.addRow("آستانه هشدار موجودی کم:", self.threshold_edit)
+        layout.addRow("", self.has_expiration_checkbox)
+        layout.addRow("تاریخ انقضا:", expiration_row)
 
         btn_layout = QHBoxLayout()
         save_btn = QPushButton("ذخیره")
@@ -66,8 +94,17 @@ class ItemForm(QDialog):
         btn_layout.addWidget(cancel_btn)
         layout.addRow(btn_layout)
 
+        self._update_expiration_jalali_label()
+
         if self.item:
             self.load_item()
+
+    def _update_expiration_jalali_label(self, *_args):
+        if not self.has_expiration_checkbox.isChecked():
+            self.expiration_jalali_label.setText("")
+            return
+        py_date = self.expiration_edit.date().toPython()
+        self.expiration_jalali_label.setText(gregorian_to_jalali_display(py_date))
 
     def load_item(self):
         self.name_edit.setText(self.item.name)
@@ -76,8 +113,17 @@ class ItemForm(QDialog):
         self.brand_edit.setText(self.item.brand)
         self.vendor_edit.setText(self.item.vendor)
         self.tags_edit.setText(self.item.tags)
-        self.expiration.setText(self.item.expiration)
         self.threshold_edit.setValue(self.item.low_stock_threshold)
+        if self.item.expiration_date:
+            self.has_expiration_checkbox.setChecked(True)
+            self.expiration_edit.setDate(
+                QDate(
+                    self.item.expiration_date.year,
+                    self.item.expiration_date.month,
+                    self.item.expiration_date.day,
+                )
+            )
+        self._update_expiration_jalali_label()
 
     def save_item(self):
         try:
@@ -90,7 +136,6 @@ class ItemForm(QDialog):
                     brand=self.brand_edit.text(),
                     vendor=self.vendor_edit.text(),
                     tags=self.tags_edit.text(),
-                    expiration=self.expiration.Text(),
                     low_stock_threshold=self.threshold_edit.value(),
                 )
             else:
@@ -101,7 +146,6 @@ class ItemForm(QDialog):
                     brand=self.brand_edit.text(),
                     vendor=self.vendor_edit.text(),
                     tags=self.tags_edit.text(),
-                    expiration=self.expiration.Text(),#Todo expiration date
                     low_stock_threshold=self.threshold_edit.value(),
                 )
         except InventoryServiceError as exc:

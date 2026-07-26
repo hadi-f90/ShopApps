@@ -9,6 +9,7 @@ from peewee import (
     SqliteDatabase,
     TextField,
     BooleanField,
+    DateField,
 
 )
 
@@ -58,7 +59,7 @@ class Item(BaseModel):
     tags = CharField(null=True, index=True)
     low_stock_threshold = IntegerField(default=5)  # per-item override, spec default = 5
     is_active = BooleanField(default=True)
-    expiration = DateTimeField(default=datetime.utcnow)  # Gregorian storage;
+    expiration = expiration_date = DateField(null=True, index=True)  # Gregorian storage;
 
 
 

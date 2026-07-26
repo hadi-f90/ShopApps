@@ -1,8 +1,11 @@
+from datetime import date
+
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QColor
 
 from src.apps.inventory import inventory_logic as logic
 from src.core.services.inventory_service import ItemDTO, WarehouseDTO
+from src.core.utils.jalali import gregorian_to_jalali_display
 
 ITEM_COLUMNS = [
     ("id", "شناسه"),
@@ -13,6 +16,7 @@ ITEM_COLUMNS = [
     ("sale_price_toman", "قیمت فروش (تومان)"),
     ("on_hand_quantity", "موجودی"),
     ("low_stock_threshold", "آستانه هشدار"),
+    ("expiration_date_jalali", "تاریخ انقضا"),
     ("tags", "تگ‌ها"),
 ]
 
@@ -52,11 +56,15 @@ class ItemsTableModel(QAbstractTableModel):
                 return str(logic.rial_to_toman(item.purchase_price))
             if field == "sale_price_toman":
                 return str(logic.rial_to_toman(item.sale_price))
+            if field == "expiration_date_jalali":
+                return gregorian_to_jalali_display(item.expiration_date) or "—"
             return str(getattr(item, field, ""))
 
         if role == Qt.BackgroundRole:
             if logic.is_low_stock(item.on_hand_quantity, item.low_stock_threshold):
                 return QColor("#fdecea")  # soft red — low-stock warning row
+            if logic.is_expiring_soon(item.expiration_date, date.today()):
+                return QColor("#fff4de")  # soft amber — expiring-soon warning row
 
         return None
 
