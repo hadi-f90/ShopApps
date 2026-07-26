@@ -13,10 +13,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Protocol
 
-from peewee import IntegrityError
+from peewee import DoesNotExist, IntegrityError
 
 from src.apps.inventory import inventory_logic as logic
 from src.core.db.models import Item, StockMovement, Warehouse, db
+from src.core.services.contact_service import ContactService, LocalContactService
 
 
 class InventoryServiceError(Exception):
@@ -43,7 +44,8 @@ class ItemDTO:
     purchase_price: int  # Rial
     sale_price: int  # Rial
     brand: str = ""
-    vendor: str = ""
+    vendor_contact_id: Optional[int] = None
+    vendor_name: str = ""  # resolved for display via ContactService, not persisted here
     tags: str = ""
     low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD
     is_active: bool = True
@@ -78,7 +80,7 @@ class InventoryService(Protocol):
         purchase_price: int,
         sale_price: int,
         brand: str = "",
-        vendor: str = "",
+        vendor_contact_id: Optional[int] = None,
         tags: str = "",
         low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD,
     ) -> ItemDTO: ...
@@ -114,6 +116,12 @@ class InventoryService(Protocol):
 class LocalInventoryService:
     """Direct in-process Peewee-backed implementation of InventoryService."""
 
+    def __init__(self, contact_service: ContactService = None):
+        # DI, same pattern as InventoryManager's own service injection —
+        # swap in a different ContactService (e.g. a future remote one)
+        # without changing this class.
+        self.contact_service = contact_service or LocalContactService()
+
     # -- DTO translation --------------------------------------------------
 
     def _to_warehouse_dto(self, w: Warehouse) -> WarehouseDTO:
@@ -122,13 +130,20 @@ class LocalInventoryService:
         )
 
     def _to_item_dto(self, item: Item) -> ItemDTO:
+        vendor_name = ""
+        if item.vendor_contact_id:
+            try:
+                vendor_name = self.contact_service.get_contact(item.vendor_contact_id).name
+            except DoesNotExist:
+                vendor_name = ""
         return ItemDTO(
             id=item.id,
             name=item.name,
             purchase_price=item.purchase_price,
             sale_price=item.sale_price,
             brand=item.brand or "",
-            vendor=item.vendor or "",
+            vendor_contact_id=item.vendor_contact_id,
+            vendor_name=vendor_name,
             tags=item.tags or "",
             low_stock_threshold=item.low_stock_threshold,
             is_active=item.is_active,
@@ -172,7 +187,7 @@ class LocalInventoryService:
         purchase_price: int,
         sale_price: int,
         brand: str = "",
-        vendor: str = "",
+        vendor_contact_id: Optional[int] = None,
         tags: str = "",
         low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD,
     ) -> ItemDTO:
@@ -181,15 +196,18 @@ class LocalInventoryService:
         )
         if errors:
             raise InventoryServiceError("؛ ".join(errors))
-        item = Item.create(
-            name=name.strip(),
-            purchase_price=purchase_price,
-            sale_price=sale_price,
-            brand=brand or None,
-            vendor=vendor or None,
-            tags=tags or None,
-            low_stock_threshold=low_stock_threshold,
-        )
+        try:
+            item = Item.create(
+                name=name.strip(),
+                purchase_price=purchase_price,
+                sale_price=sale_price,
+                brand=brand or None,
+                vendor_contact=vendor_contact_id,
+                tags=tags or None,
+                low_stock_threshold=low_stock_threshold,
+            )
+        except IntegrityError:
+            raise InventoryServiceError("فروشنده انتخاب‌شده معتبر نیست")
         return self._to_item_dto(item)
 
     def update_item(self, item_id: int, **fields) -> ItemDTO:
@@ -214,14 +232,17 @@ class LocalInventoryService:
             "purchase_price",
             "sale_price",
             "brand",
-            "vendor",
+            "vendor_contact_id",
             "tags",
             "low_stock_threshold",
             "is_active",
         ):
             if field_name in fields:
                 setattr(item, field_name, fields[field_name])
-        item.save()
+        try:
+            item.save()
+        except IntegrityError:
+            raise InventoryServiceError("فروشنده انتخاب‌شده معتبر نیست")
         return self._to_item_dto(item)
 
     def list_items(self, search: str = "") -> List[ItemDTO]:
