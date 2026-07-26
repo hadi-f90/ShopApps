@@ -1,3 +1,5 @@
+from typing import Optional
+
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -5,13 +7,17 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QPushButton,
     QSpinBox,
     QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 from src.apps.inventory import inventory_logic as logic
+from src.core.services.contact_service import ContactDTO, ContactService, LocalContactService
 from src.core.services.inventory_service import (
     InventoryService,
     InventoryServiceError,
@@ -36,11 +42,79 @@ def _rial_spinbox() -> QDoubleSpinBox:
     return box
 
 
+class VendorPickerDialog(QDialog):
+    """Search/select a supplier from Contacts filtered to vendors.
+
+    Reads through ContactService only — never imports the Contact model —
+    so Inventory doesn't repeat the direct-ORM-import pattern that's
+    already flagged as debt in the Contacts sub-app.
+    """
+
+    def __init__(self, contact_service: ContactService, parent=None):
+        super().__init__(parent)
+        self.contact_service = contact_service
+        self.selected_vendor: Optional[ContactDTO] = None
+        self._vendors: list[ContactDTO] = []
+
+        self.setWindowTitle("انتخاب فروشنده/تامین‌کننده")
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("جستجو در نام، موبایل، سازمان...")
+        self.search_edit.textChanged.connect(self.reload)
+        layout.addWidget(self.search_edit)
+
+        self.list_widget = QListWidget()
+        self.list_widget.itemDoubleClicked.connect(self.accept)
+        layout.addWidget(self.list_widget)
+
+        btn_layout = QHBoxLayout()
+        select_btn = QPushButton("انتخاب")
+        cancel_btn = QPushButton("انصراف")
+        select_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(select_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self.reload()
+
+    def reload(self, search_text: str = None):
+        query = self.search_edit.text() if search_text is None else search_text
+        self._vendors = self.contact_service.list_vendors(search=query)
+        self.list_widget.clear()
+        for v in self._vendors:
+            label = v.name
+            if v.organization:
+                label += f" — {v.organization}"
+            if v.mobile:
+                label += f" ({v.mobile})"
+            self.list_widget.addItem(label)
+
+    def accept(self):
+        row = self.list_widget.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "خطا", "یک فروشنده انتخاب کنید")
+            return
+        self.selected_vendor = self._vendors[row]
+        super().accept()
+
+
 class ItemForm(QDialog):
-    def __init__(self, service: InventoryService, parent=None, item: ItemDTO = None):
+    def __init__(
+        self,
+        service: InventoryService,
+        parent=None,
+        item: ItemDTO = None,
+        contact_service: ContactService = None,
+    ):
         super().__init__(parent)
         self.service = service
         self.item = item
+        self.contact_service = contact_service or LocalContactService()
+        self._vendor_contact_id: Optional[int] = None
         self.setWindowTitle("افزودن/ویرایش کالا")
         self.setMinimumWidth(480)
 
@@ -48,7 +122,6 @@ class ItemForm(QDialog):
 
         self.name_edit = QLineEdit()
         self.brand_edit = QLineEdit()
-        self.vendor_edit = QLineEdit()
         self.tags_edit = QLineEdit()
 
         self.purchase_price_edit = _rial_spinbox()
@@ -58,11 +131,30 @@ class ItemForm(QDialog):
         self.threshold_edit.setRange(0, 1_000_000)
         self.threshold_edit.setValue(logic.DEFAULT_LOW_STOCK_THRESHOLD)
 
+        # Single "default/preferred supplier" — informational, sourced from
+        # Contacts. This is NOT per-purchase vendor history (an item can be
+        # bought from several suppliers over time) — that belongs to
+        # Accounting's future Purchase records.
+        self.vendor_display = QLineEdit()
+        self.vendor_display.setReadOnly(True)
+        self.vendor_display.setPlaceholderText("فروشنده‌ای انتخاب نشده")
+        self.vendor_pick_btn = QPushButton("انتخاب از مخاطبین")
+        self.vendor_clear_btn = QPushButton("حذف")
+        self.vendor_pick_btn.clicked.connect(self.pick_vendor)
+        self.vendor_clear_btn.clicked.connect(self.clear_vendor)
+
+        vendor_row = QWidget()
+        vendor_row_layout = QHBoxLayout(vendor_row)
+        vendor_row_layout.setContentsMargins(0, 0, 0, 0)
+        vendor_row_layout.addWidget(self.vendor_display)
+        vendor_row_layout.addWidget(self.vendor_pick_btn)
+        vendor_row_layout.addWidget(self.vendor_clear_btn)
+
         layout.addRow("نام کالا *:", self.name_edit)
         layout.addRow("قیمت خرید:", self.purchase_price_edit)
         layout.addRow("قیمت فروش:", self.sale_price_edit)
         layout.addRow("برند:", self.brand_edit)
-        layout.addRow("فروشنده/تامین‌کننده:", self.vendor_edit)
+        layout.addRow("فروشنده پیش‌فرض:", vendor_row)
         layout.addRow("تگ‌ها:", self.tags_edit)
         layout.addRow("آستانه هشدار موجودی کم:", self.threshold_edit)
 
@@ -78,14 +170,26 @@ class ItemForm(QDialog):
         if self.item:
             self.load_item()
 
+    def pick_vendor(self):
+        dialog = VendorPickerDialog(self.contact_service, self)
+        if dialog.exec() and dialog.selected_vendor:
+            self._vendor_contact_id = dialog.selected_vendor.id
+            self.vendor_display.setText(dialog.selected_vendor.name)
+
+    def clear_vendor(self):
+        self._vendor_contact_id = None
+        self.vendor_display.clear()
+
     def load_item(self):
         self.name_edit.setText(self.item.name)
         self.purchase_price_edit.setValue(self.item.purchase_price)
         self.sale_price_edit.setValue(self.item.sale_price)
         self.brand_edit.setText(self.item.brand)
-        self.vendor_edit.setText(self.item.vendor)
         self.tags_edit.setText(self.item.tags)
         self.threshold_edit.setValue(self.item.low_stock_threshold)
+        if self.item.vendor_contact_id:
+            self._vendor_contact_id = self.item.vendor_contact_id
+            self.vendor_display.setText(self.item.vendor_name)
 
     def save_item(self):
         try:
@@ -96,7 +200,7 @@ class ItemForm(QDialog):
                     purchase_price=int(self.purchase_price_edit.value()),
                     sale_price=int(self.sale_price_edit.value()),
                     brand=self.brand_edit.text(),
-                    vendor=self.vendor_edit.text(),
+                    vendor_contact_id=self._vendor_contact_id,
                     tags=self.tags_edit.text(),
                     low_stock_threshold=self.threshold_edit.value(),
                 )
@@ -106,7 +210,7 @@ class ItemForm(QDialog):
                     purchase_price=int(self.purchase_price_edit.value()),
                     sale_price=int(self.sale_price_edit.value()),
                     brand=self.brand_edit.text(),
-                    vendor=self.vendor_edit.text(),
+                    vendor_contact_id=self._vendor_contact_id,
                     tags=self.tags_edit.text(),
                     low_stock_threshold=self.threshold_edit.value(),
                 )

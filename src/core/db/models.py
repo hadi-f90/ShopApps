@@ -66,9 +66,15 @@ class Item(BaseModel):
     purchase_price = IntegerField(default=0)
     sale_price = IntegerField(default=0)
     brand = CharField(null=True)
-    # Plain CharField, not a FK to Contact, until the Contacts service
-    # protocol / core-services seam exists (see architectural-debt note).
-    vendor = CharField(null=True)
+    # Single "default/preferred supplier" — informational only. This is
+    # NOT where per-purchase vendor history lives (multiple suppliers can
+    # supply the same item over time); that belongs to Accounting's future
+    # Purchase record, linked back to Inventory via StockMovement.reference.
+    # SET NULL (not RESTRICT) because this is a convenience pointer, not
+    # an audit trail — losing it when a contact is deleted is fine.
+    vendor_contact = ForeignKeyField(
+        Contact, backref="supplied_items", null=True, on_delete="SET NULL"
+    )
     tags = CharField(null=True, index=True)
     low_stock_threshold = IntegerField(default=5)
     is_active = BooleanField(default=True)

@@ -8,7 +8,7 @@ ITEM_COLUMNS = [
     ("id", "شناسه"),
     ("name", "نام"),
     ("brand", "برند"),
-    ("vendor", "فروشنده"),
+    ("vendor_name", "فروشنده"),
     ("purchase_price_toman", "قیمت خرید (تومان)"),
     ("sale_price_toman", "قیمت فروش (تومان)"),
     ("on_hand_quantity", "موجودی"),
