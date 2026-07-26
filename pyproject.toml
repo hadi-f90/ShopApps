@@ -12,6 +12,7 @@ dependencies = [
     "PyPDF2",            # PDF generation
     "qtawesome",         # Icons
     "Pillow",            # Images
+    "jdatetime",         # Persian Date time manager
 
 ]
 
