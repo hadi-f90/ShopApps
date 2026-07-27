@@ -1,3 +1,4 @@
+import logging
 import sys
 from pathlib import Path
 
@@ -15,13 +16,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+logger = logging.getLogger(__name__)
+
 # Icon handling
 try:
     import qtawesome as qta
     HAS_ICONS = True
 except ImportError:
     HAS_ICONS = False
-    print("⚠️ qtawesome not installed → pip install qtawesome")
+    logger.warning("qtawesome not installed — sidebar icons disabled (pip install qtawesome)")
 
 from src.apps.contacts.main import ContactsManager
 from src.apps.inventory.main import InventoryManager
@@ -35,11 +38,11 @@ def load_fonts():
         for font_file in fonts_dir.glob("*.ttf"):
             font_id = QFontDatabase.addApplicationFont(str(font_file))
             if font_id == -1:
-                print(f"⚠️ Failed to load font: {font_file}")
+                logger.warning("Failed to load font: %s", font_file)
             else:
-                print(f"✓ Loaded font: {font_file.name}")
+                logger.debug("Loaded font: %s", font_file.name)
     else:
-        print(f"⚠️ Fonts directory not found: {fonts_dir}")
+        logger.warning("Fonts directory not found: %s", fonts_dir)
 
 
 def apply_light_palette(app: QApplication):
@@ -215,6 +218,10 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+
     app = QApplication(sys.argv)
 
     # Load custom fonts
