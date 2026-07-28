@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -119,15 +120,18 @@ class WarehousesTab(QWidget):
 
 
 class InventoryManager(QWidget):
-    """Top-level Inventory sub-app widget. Owns its InventoryService instance
-    via dependency injection — pass a different implementation (e.g. a
-    future remote/LAN one) without changing this class."""
+    """Top-level Inventory sub-app widget."""
 
     def __init__(self, service: InventoryService = None, parent=None):
         super().__init__(parent)
         self.service = service or LocalInventoryService()
 
         layout = QVBoxLayout(self)
+        title = QLabel("📦 انبار")
+        title.setObjectName("page-title")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #2c3e50;")
+        layout.addWidget(title)
+
         self.tabs = QTabWidget()
         self.items_tab = ItemsTab(self.service)
         self.warehouses_tab = WarehousesTab(self.service)

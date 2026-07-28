@@ -17,6 +17,20 @@ from src.core.db.models import Contact, Item, Purchase, Receipt
 from src.core.errors import ContactError, ContactInUseError, ContactServiceError
 
 
+def normalize_phone(value: str | None) -> str:
+    """Strip spaces/separators from pasted phone numbers; keep digits and leading +."""
+    if not value:
+        return ""
+    out: list[str] = []
+    for ch in str(value).strip():
+        if ch.isdigit():
+            out.append(ch)
+        elif ch == "+" and not out:
+            out.append(ch)
+    return "".join(out)
+
+
+
 @dataclass(frozen=True)
 class ContactDTO:
     id: Optional[int]
@@ -104,8 +118,8 @@ class LocalContactService:
         self._validate_name(name)
         c = Contact.create(
             name=name.strip(),
-            phone=phone or None,
-            mobile=mobile or None,
+            phone=normalize_phone(phone) or None,
+            mobile=normalize_phone(mobile) or None,
             email=email or None,
             organization=organization or None,
             title=title or None,
@@ -141,6 +155,8 @@ class LocalContactService:
         ):
             if key in fields:
                 val = fields[key]
+                if key in ("phone", "mobile"):
+                    val = normalize_phone(val) if val else None
                 setattr(c, key, val if val else None)
 
         if "is_customer" in fields:

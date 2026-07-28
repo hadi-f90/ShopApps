@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -22,6 +23,11 @@ class ContactsManager(QWidget):
         super().__init__(parent)
         self.service = service or LocalContactService()
         layout = QVBoxLayout(self)
+
+        title = QLabel("👥 مخاطبین")
+        title.setObjectName("page-title")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #2c3e50;")
+        layout.addWidget(title)
 
         search_layout = QHBoxLayout()
         self.search_edit = QLineEdit()
