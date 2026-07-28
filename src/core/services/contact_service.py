@@ -1,43 +1,68 @@
 """
-Backend service layer for Contacts — READ-ONLY SLICE.
+Backend service layer for Contacts.
 
-This is a narrow subset added specifically to support the Inventory
-vendor-picker feature (search/select a supplier from existing Contacts).
-It is NOT the full ContactService retrofit that the Contacts architectural
-debt calls for — ContactForm/ContactsManager still import the Contact model
-directly, and that larger retrofit is still deferred until Contacts work
-resumes. This file exists so Inventory doesn't repeat the same
-direct-ORM-import pattern into a *second* sub-app while that debt is
-outstanding.
-
-Known limitation: the Contact model still uses a single `contact_type`
-field rather than the independent is_customer/is_vendor booleans that
-contacts-mvs-spec.md was revised to require. A contact currently cannot be
-both a customer and a vendor. list_vendors() below filters on
-contact_type == "vendor" and will miss such dual-role contacts until that
-model is updated.
+Full MVS ContactService: CRUD + customer/vendor filtered lists.
+UI and other sub-apps must use this Protocol — never import the Contact
+model directly.
 """
 
 from dataclasses import dataclass
-from typing import List, Protocol
+from typing import List, Optional, Protocol
+
+from peewee import DoesNotExist
 
 from src.core.db.models import Contact
 
 
+class ContactServiceError(Exception):
+    """Domain error surfaced to the UI layer. Message text is Farsi-facing."""
+
+
 @dataclass(frozen=True)
 class ContactDTO:
-    id: int
+    id: Optional[int]
     name: str
-    mobile: str = ""
     phone: str = ""
+    mobile: str = ""
+    email: str = ""
     organization: str = ""
-    contact_type: str = "customer"
+    title: str = ""
+    address: str = ""
+    is_customer: bool = True
+    is_vendor: bool = False
+    tags: str = ""
+    note: str = ""
+    tasks: str = ""
 
 
 class ContactService(Protocol):
-    def list_vendors(self, search: str = "") -> List[ContactDTO]: ...
+    def create_contact(
+        self,
+        name: str,
+        phone: str = "",
+        mobile: str = "",
+        email: str = "",
+        organization: str = "",
+        title: str = "",
+        address: str = "",
+        is_customer: bool = True,
+        is_vendor: bool = False,
+        tags: str = "",
+        note: str = "",
+        tasks: str = "",
+    ) -> ContactDTO: ...
+
+    def update_contact(self, contact_id: int, **fields) -> ContactDTO: ...
 
     def get_contact(self, contact_id: int) -> ContactDTO: ...
+
+    def list_contacts(self, search: str = "") -> List[ContactDTO]: ...
+
+    def list_customers(self, search: str = "") -> List[ContactDTO]: ...
+
+    def list_vendors(self, search: str = "") -> List[ContactDTO]: ...
+
+    def delete_contact(self, contact_id: int) -> None: ...
 
 
 class LocalContactService:
@@ -45,21 +70,128 @@ class LocalContactService:
         return ContactDTO(
             id=c.id,
             name=c.name,
-            mobile=c.mobile or "",
             phone=c.phone or "",
+            mobile=c.mobile or "",
+            email=c.email or "",
             organization=c.organization or "",
-            contact_type=c.contact_type,
+            title=c.title or "",
+            address=c.address or "",
+            is_customer=bool(c.is_customer),
+            is_vendor=bool(c.is_vendor),
+            tags=c.tags or "",
+            note=c.note or "",
+            tasks=c.tasks or "",
         )
 
-    def list_vendors(self, search: str = "") -> List[ContactDTO]:
-        query = Contact.select().where(Contact.contact_type == "vendor")
-        if search:
-            query = query.where(
-                Contact.name.contains(search)
-                | Contact.mobile.contains(search)
-                | Contact.organization.contains(search)
-            )
-        return [self._to_dto(c) for c in query.order_by(Contact.name)]
+    def _validate_name(self, name: str) -> None:
+        if not name or not name.strip():
+            raise ContactServiceError("نام الزامی است")
+
+    def create_contact(
+        self,
+        name: str,
+        phone: str = "",
+        mobile: str = "",
+        email: str = "",
+        organization: str = "",
+        title: str = "",
+        address: str = "",
+        is_customer: bool = True,
+        is_vendor: bool = False,
+        tags: str = "",
+        note: str = "",
+        tasks: str = "",
+    ) -> ContactDTO:
+        self._validate_name(name)
+        if not is_customer and not is_vendor:
+            # Allow neither only if caller really wants it; still require name.
+            pass
+        c = Contact.create(
+            name=name.strip(),
+            phone=phone or None,
+            mobile=mobile or None,
+            email=email or None,
+            organization=organization or None,
+            title=title or None,
+            address=address or None,
+            is_customer=is_customer,
+            is_vendor=is_vendor,
+            tags=tags or None,
+            note=note or None,
+            tasks=tasks or None,
+        )
+        return self._to_dto(c)
+
+    def update_contact(self, contact_id: int, **fields) -> ContactDTO:
+        try:
+            c = Contact.get_by_id(contact_id)
+        except DoesNotExist:
+            raise ContactServiceError("مخاطب مورد نظر یافت نشد")
+
+        if "name" in fields:
+            self._validate_name(fields["name"])
+            c.name = fields["name"].strip()
+
+        for key in (
+            "phone",
+            "mobile",
+            "email",
+            "organization",
+            "title",
+            "address",
+            "tags",
+            "note",
+            "tasks",
+        ):
+            if key in fields:
+                val = fields[key]
+                setattr(c, key, val if val else None)
+
+        if "is_customer" in fields:
+            c.is_customer = bool(fields["is_customer"])
+        if "is_vendor" in fields:
+            c.is_vendor = bool(fields["is_vendor"])
+
+        c.save()
+        return self._to_dto(c)
 
     def get_contact(self, contact_id: int) -> ContactDTO:
-        return self._to_dto(Contact.get_by_id(contact_id))
+        try:
+            return self._to_dto(Contact.get_by_id(contact_id))
+        except DoesNotExist:
+            raise ContactServiceError("مخاطب مورد نظر یافت نشد")
+
+    def _search_query(self, base, search: str):
+        if not search:
+            return base
+        return base.where(
+            Contact.name.contains(search)
+            | Contact.mobile.contains(search)
+            | Contact.phone.contains(search)
+            | Contact.organization.contains(search)
+            | Contact.email.contains(search)
+        )
+
+    def list_contacts(self, search: str = "") -> List[ContactDTO]:
+        query = self._search_query(Contact.select(), search)
+        return [self._to_dto(c) for c in query.order_by(Contact.name)]
+
+    def list_customers(self, search: str = "") -> List[ContactDTO]:
+        query = self._search_query(
+            Contact.select().where(Contact.is_customer == True),  # noqa: E712
+            search,
+        )
+        return [self._to_dto(c) for c in query.order_by(Contact.name)]
+
+    def list_vendors(self, search: str = "") -> List[ContactDTO]:
+        query = self._search_query(
+            Contact.select().where(Contact.is_vendor == True),  # noqa: E712
+            search,
+        )
+        return [self._to_dto(c) for c in query.order_by(Contact.name)]
+
+    def delete_contact(self, contact_id: int) -> None:
+        try:
+            Contact.get_by_id(contact_id).delete_instance()
+        except DoesNotExist:
+            raise ContactServiceError("مخاطب مورد نظر یافت نشد")

@@ -10,15 +10,19 @@ from PySide6.QtWidgets import (
 )
 
 from src.apps.contacts.forms import ContactForm
-from src.core.db.models import Contact
+from src.core.services.contact_service import (
+    ContactService,
+    ContactServiceError,
+    LocalContactService,
+)
 
 
 class ContactsManager(QWidget):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, service: ContactService = None, parent=None):
+        super().__init__(parent)
+        self.service = service or LocalContactService()
         layout = QVBoxLayout(self)
 
-        # Search
         search_layout = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("جستجو در نام، موبایل، سازمان...")
@@ -26,7 +30,6 @@ class ContactsManager(QWidget):
         search_layout.addWidget(self.search_edit)
         layout.addLayout(search_layout)
 
-        # Toolbar
         toolbar = QHBoxLayout()
         self.add_btn = QPushButton("➕ افزودن مخاطب")
         self.edit_btn = QPushButton("✏️ ویرایش")
@@ -45,43 +48,47 @@ class ContactsManager(QWidget):
         toolbar.addStretch()
         layout.addLayout(toolbar)
 
-        # Table with more fields
         self.table = QTableWidget()
         self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels(
-            ["ID", "نام", "تلفن ثابت", "موبایل", "ایمیل", "سازمان", "سمت/نقش", "نوع", "تگ‌ها"]
+            [
+                "ID",
+                "نام",
+                "تلفن ثابت",
+                "موبایل",
+                "ایمیل",
+                "سازمان",
+                "مشتری",
+                "فروشنده",
+                "تگ‌ها",
+            ]
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
 
         self.load_data()
 
-    def load_data(self, filter_text=""):
+    def load_data(self, filter_text: str = ""):
         self.table.setRowCount(0)
-        query = Contact.select()
-        if filter_text:
-            query = query.where(
-                Contact.name.contains(filter_text)
-                | Contact.mobile.contains(filter_text)
-                | Contact.organization.contains(filter_text)
-            )
-        for row, c in enumerate(query):
+        text = filter_text if filter_text else self.search_edit.text()
+        contacts = self.service.list_contacts(search=text)
+        for row, c in enumerate(contacts):
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(str(c.id)))
             self.table.setItem(row, 1, QTableWidgetItem(c.name))
-            self.table.setItem(row, 2, QTableWidgetItem(c.phone or ""))
-            self.table.setItem(row, 3, QTableWidgetItem(c.mobile or ""))
-            self.table.setItem(row, 4, QTableWidgetItem(c.email or ""))
-            self.table.setItem(row, 5, QTableWidgetItem(c.organization or ""))
-            self.table.setItem(row, 6, QTableWidgetItem(c.title or ""))
-            self.table.setItem(row, 7, QTableWidgetItem(c.contact_type))
-            self.table.setItem(row, 8, QTableWidgetItem(c.tags or ""))
+            self.table.setItem(row, 2, QTableWidgetItem(c.phone))
+            self.table.setItem(row, 3, QTableWidgetItem(c.mobile))
+            self.table.setItem(row, 4, QTableWidgetItem(c.email))
+            self.table.setItem(row, 5, QTableWidgetItem(c.organization))
+            self.table.setItem(row, 6, QTableWidgetItem("✓" if c.is_customer else ""))
+            self.table.setItem(row, 7, QTableWidgetItem("✓" if c.is_vendor else ""))
+            self.table.setItem(row, 8, QTableWidgetItem(c.tags))
 
-    def filter_contacts(self, text):
+    def filter_contacts(self, text: str):
         self.load_data(text)
 
     def add_contact(self):
-        dialog = ContactForm(self)
+        dialog = ContactForm(self, service=self.service)
         if dialog.exec():
             self.load_data()
 
@@ -91,8 +98,12 @@ class ContactsManager(QWidget):
             QMessageBox.warning(self, "خطا", "یک مخاطب انتخاب کنید")
             return
         contact_id = int(self.table.item(row, 0).text())
-        contact = Contact.get_by_id(contact_id)
-        dialog = ContactForm(self, contact)
+        try:
+            contact = self.service.get_contact(contact_id)
+        except ContactServiceError as exc:
+            QMessageBox.warning(self, "خطا", str(exc))
+            return
+        dialog = ContactForm(self, contact=contact, service=self.service)
         if dialog.exec():
             self.load_data()
 
@@ -105,5 +116,9 @@ class ContactsManager(QWidget):
             == QMessageBox.Yes
         ):
             contact_id = int(self.table.item(row, 0).text())
-            Contact.get_by_id(contact_id).delete_instance()
+            try:
+                self.service.delete_contact(contact_id)
+            except ContactServiceError as exc:
+                QMessageBox.warning(self, "خطا", str(exc))
+                return
             self.load_data()
