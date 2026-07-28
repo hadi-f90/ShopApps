@@ -24,3 +24,4 @@ native/**/*.c
 *.db
 *.sqlite
 *.sqlite3
+shopapps.db
