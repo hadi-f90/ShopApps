@@ -6,16 +6,15 @@ UI and other sub-apps must use this Protocol — never import the Contact
 model directly.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Optional, Protocol
 
 from peewee import DoesNotExist
 
-from src.core.db.models import Contact
-
-
-class ContactServiceError(Exception):
-    """Domain error surfaced to the UI layer. Message text is Farsi-facing."""
+from src.core.db.models import Contact, Item, Purchase, Receipt
+from src.core.errors import ContactError, ContactInUseError, ContactServiceError
 
 
 @dataclass(frozen=True)
@@ -103,9 +102,6 @@ class LocalContactService:
         tasks: str = "",
     ) -> ContactDTO:
         self._validate_name(name)
-        if not is_customer and not is_vendor:
-            # Allow neither only if caller really wants it; still require name.
-            pass
         c = Contact.create(
             name=name.strip(),
             phone=phone or None,
@@ -192,6 +188,24 @@ class LocalContactService:
 
     def delete_contact(self, contact_id: int) -> None:
         try:
-            Contact.get_by_id(contact_id).delete_instance()
+            Contact.get_by_id(contact_id)
         except DoesNotExist:
             raise ContactServiceError("مخاطب مورد نظر یافت نشد")
+
+        # Integrity: do not hard-delete if business records still point here.
+        # (Security + Database agents — avoid silent SET NULL data loss.)
+        reasons: list[str] = []
+        if Receipt.select().where(Receipt.contact == contact_id).exists():
+            reasons.append("فاکتور فروش")
+        if Purchase.select().where(Purchase.vendor_contact == contact_id).exists():
+            reasons.append("سند خرید")
+        if Item.select().where(Item.vendor_contact == contact_id).exists():
+            reasons.append("کالای دارای فروشنده پیش‌فرض")
+
+        if reasons:
+            raise ContactInUseError(
+                "حذف ممکن نیست؛ این مخاطب در موارد زیر استفاده شده است: "
+                + "، ".join(reasons)
+            )
+
+        Contact.get_by_id(contact_id).delete_instance()

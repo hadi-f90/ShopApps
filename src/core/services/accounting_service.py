@@ -3,33 +3,27 @@ Backend service layer for Accounting & Receipts (MVS).
 
 Creates receipts that drive sale stock movements, and purchases that
 drive purchase stock movements, exclusively through InventoryService.
+Display names are resolved via InventoryService / ContactService — not
+by importing sibling domain models for lookups (Backend API agent rule).
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from typing import List, Optional, Protocol
 
 from peewee import DoesNotExist
 
-from src.core.db.models import (
-    Contact,
-    Item,
-    Purchase,
-    Receipt,
-    ReceiptLine,
-    Warehouse,
-    db,
-)
+from src.apps.accounting import accounting_logic as logic
+from src.core.db.models import Purchase, Receipt, ReceiptLine, db
+from src.core.errors import AccountingError, AccountingServiceError
 from src.core.services.contact_service import ContactService, LocalContactService
 from src.core.services.inventory_service import (
     InventoryService,
     InventoryServiceError,
     LocalInventoryService,
 )
-
-
-class AccountingServiceError(Exception):
-    """Domain error surfaced to the UI. Message text is Farsi-facing."""
 
 
 @dataclass(frozen=True)
@@ -118,6 +112,18 @@ class LocalAccountingService:
         self.inventory = inventory_service or LocalInventoryService()
         self.contacts = contact_service or LocalContactService()
 
+    def _item_name(self, item_id: int) -> str:
+        try:
+            return self.inventory.get_item(item_id).name
+        except InventoryServiceError:
+            return f"#{item_id}"
+
+    def _warehouse_name(self, warehouse_id: int) -> str:
+        for w in self.inventory.list_warehouses():
+            if w.id == warehouse_id:
+                return w.name
+        return f"#{warehouse_id}"
+
     def _to_receipt_dto(self, r: Receipt, include_lines: bool = True) -> ReceiptDTO:
         contact_name = ""
         if r.contact_id:
@@ -128,16 +134,11 @@ class LocalAccountingService:
         lines: List[ReceiptLineDTO] = []
         if include_lines:
             for ln in r.lines:
-                item_name = ""
-                try:
-                    item_name = Item.get_by_id(ln.item_id).name
-                except DoesNotExist:
-                    item_name = f"#{ln.item_id}"
                 lines.append(
                     ReceiptLineDTO(
                         id=ln.id,
                         item_id=ln.item_id,
-                        item_name=item_name,
+                        item_name=self._item_name(ln.item_id),
                         quantity=ln.quantity,
                         unit_price_rial=ln.unit_price_rial,
                         line_total_rial=ln.line_total_rial,
@@ -160,24 +161,14 @@ class LocalAccountingService:
                 vendor_name = self.contacts.get_contact(p.vendor_contact_id).name
             except Exception:
                 pass
-        item_name = ""
-        warehouse_name = ""
-        try:
-            item_name = Item.get_by_id(p.item_id).name
-        except DoesNotExist:
-            item_name = f"#{p.item_id}"
-        try:
-            warehouse_name = Warehouse.get_by_id(p.warehouse_id).name
-        except DoesNotExist:
-            warehouse_name = f"#{p.warehouse_id}"
         return PurchaseDTO(
             id=p.id,
             vendor_contact_id=p.vendor_contact_id,
             vendor_name=vendor_name,
             item_id=p.item_id,
-            item_name=item_name,
+            item_name=self._item_name(p.item_id),
             warehouse_id=p.warehouse_id,
-            warehouse_name=warehouse_name,
+            warehouse_name=self._warehouse_name(p.warehouse_id),
             quantity=p.quantity,
             unit_cost_rial=p.unit_cost_rial,
             total_rial=p.total_rial,
@@ -192,12 +183,21 @@ class LocalAccountingService:
         warehouse_id: int,
         note: str = "",
     ) -> ReceiptDTO:
-        if not lines:
-            raise AccountingServiceError("حداقل یک قلم کالا برای فاکتور لازم است")
         if warehouse_id is None:
             raise AccountingServiceError("انبار الزامی است")
 
-        # Validate customer is marked is_customer when provided
+        pure_lines = [
+            logic.LineInput(
+                item_id=ln.item_id,
+                quantity=ln.quantity,
+                unit_price_rial=ln.unit_price_rial,
+            )
+            for ln in lines
+        ]
+        errs = logic.validate_receipt_lines(pure_lines)
+        if errs:
+            raise AccountingServiceError("؛ ".join(errs))
+
         if customer_id is not None:
             try:
                 cust = self.contacts.get_contact(customer_id)
@@ -206,13 +206,7 @@ class LocalAccountingService:
             if not cust.is_customer:
                 raise AccountingServiceError("مخاطب انتخاب‌شده مشتری نیست")
 
-        for ln in lines:
-            if ln.quantity <= 0:
-                raise AccountingServiceError("تعداد باید بزرگ‌تر از صفر باشد")
-            if ln.unit_price_rial < 0:
-                raise AccountingServiceError("قیمت واحد نمی‌تواند منفی باشد")
-
-        total = sum(ln.quantity * ln.unit_price_rial for ln in lines)
+        total = logic.receipt_total_rial(pure_lines)
 
         try:
             with db.atomic():
@@ -227,9 +221,10 @@ class LocalAccountingService:
                         item=ln.item_id,
                         quantity=ln.quantity,
                         unit_price_rial=ln.unit_price_rial,
-                        line_total_rial=ln.quantity * ln.unit_price_rial,
+                        line_total_rial=logic.line_total_rial(
+                            ln.quantity, ln.unit_price_rial
+                        ),
                     )
-                    # sale movement (negative delta)
                     self.inventory.record_movement(
                         item_id=ln.item_id,
                         warehouse_id=warehouse_id,
@@ -239,9 +234,11 @@ class LocalAccountingService:
                         note=note or "",
                     )
         except InventoryServiceError as exc:
-            raise AccountingServiceError(str(exc))
+            raise AccountingServiceError(str(exc), cause=exc)
+        except AccountingError:
+            raise
         except Exception as exc:
-            raise AccountingServiceError(f"ثبت فاکتور ناموفق بود: {exc}")
+            raise AccountingServiceError(f"ثبت فاکتور ناموفق بود: {exc}", cause=exc)
 
         return self._to_receipt_dto(receipt)
 
@@ -288,10 +285,11 @@ class LocalAccountingService:
         vendor_contact_id: Optional[int] = None,
         note: str = "",
     ) -> PurchaseDTO:
-        if quantity <= 0:
-            raise AccountingServiceError("تعداد باید بزرگ‌تر از صفر باشد")
-        if unit_cost_rial < 0:
-            raise AccountingServiceError("بهای واحد نمی‌تواند منفی باشد")
+        errs = logic.validate_purchase_fields(
+            quantity, unit_cost_rial, item_id, warehouse_id
+        )
+        if errs:
+            raise AccountingServiceError("؛ ".join(errs))
 
         if vendor_contact_id is not None:
             try:
@@ -301,7 +299,7 @@ class LocalAccountingService:
             if not v.is_vendor:
                 raise AccountingServiceError("مخاطب انتخاب‌شده فروشنده نیست")
 
-        total = quantity * unit_cost_rial
+        total = logic.purchase_total_rial(quantity, unit_cost_rial)
         try:
             with db.atomic():
                 purchase = Purchase.create(
@@ -322,9 +320,9 @@ class LocalAccountingService:
                     note=note or "",
                 )
         except InventoryServiceError as exc:
-            raise AccountingServiceError(str(exc))
+            raise AccountingServiceError(str(exc), cause=exc)
         except Exception as exc:
-            raise AccountingServiceError(f"ثبت خرید ناموفق بود: {exc}")
+            raise AccountingServiceError(f"ثبت خرید ناموفق بود: {exc}", cause=exc)
 
         return self._to_purchase_dto(purchase)
 
@@ -343,11 +341,12 @@ class LocalAccountingService:
         return results
 
     def today_sales_total_rial(self) -> int:
-        today = date.today()
+        # Align "today" with UTC date to match naive-UTC timestamps stored
+        # by models._utcnow_naive (technical-conventions: Gregorian storage).
+        today = datetime.now(timezone.utc).date()
         start = datetime.combine(today, time.min)
         end = datetime.combine(today, time.max)
-        total = (
-            Receipt.select()
-            .where((Receipt.timestamp >= start) & (Receipt.timestamp <= end))
+        rows = Receipt.select().where(
+            (Receipt.timestamp >= start) & (Receipt.timestamp <= end)
         )
-        return sum(r.total_rial for r in total)
+        return sum(r.total_rial for r in rows)

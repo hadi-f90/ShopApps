@@ -1,45 +1,43 @@
+"""
+Contacts UI/form smoke tests — aligned with is_customer/is_vendor schema
+and ContactService (no contact_type).
+"""
+
 import pytest
 from PySide6.QtWidgets import QApplication, QDialog
+
 from src.apps.contacts.forms import ContactForm
-from src.core.db.models import Contact, db
+from src.core.services.contact_service import LocalContactService
 
 
-@pytest.fixture(autouse=True)
-def setup_database():
-    db.connect()
-    db.create_tables([Contact], safe=True)
-    yield
-    db.drop_tables([Contact])
-    db.close()
+@pytest.fixture
+def svc(test_db):
+    return LocalContactService()
 
-def test_create_contact():
-    contact = Contact.create(name="تست مشتری", mobile="09123456789", contact_type="customer")
+
+def test_create_contact_via_service(svc):
+    contact = svc.create_contact(
+        name="تست مشتری", mobile="09123456789", is_customer=True, is_vendor=False
+    )
     assert contact.id is not None
     assert contact.name == "تست مشتری"
+    assert contact.is_customer is True
+    assert contact.is_vendor is False
 
-def test_form_save_new_contact(qtbot):
-    app = QApplication.instance() or QApplication([])
-    form = ContactForm()
-    form.name_edit.setText("مشتری جدید")
-    form.mobile_edit.setText("09121234567")
-    form.note_edit.setText("یادداشت تست")
 
-    # Simulate save (form logic tested via model)
-    # In real UI test: qtbot.mouseClick(save_button)
-    assert form.name_edit.text() == "مشتری جدید"
-
-def test_security_input_validation():
-    # Basic security: name is required (already in form)
-    pass  # Can be expanded with more validation
-
-def test_security_name_required_validation(qtbot):
-    """Test that form rejects empty name (security/validation)"""
-    form = ContactForm()
-    form.name_edit.clear()  # Empty name
+def test_form_rejects_empty_name(qtbot):
+    """Name is required — form must not accept empty name."""
+    _ = QApplication.instance() or QApplication([])
+    form = ContactForm(service=LocalContactService())
+    form.name_edit.clear()
     form.mobile_edit.setText("09123456789")
-
-    # Simulate save
     form.save_contact()
+    assert form.result() != QDialog.Accepted
 
-    # Form should not accept (still open)
-    assert not form.result() == QDialog.Accepted
+
+def test_form_fields_accept_dual_role_flags(qtbot):
+    _ = QApplication.instance() or QApplication([])
+    form = ContactForm(service=LocalContactService())
+    assert form.is_customer_cb.isChecked() is True
+    form.is_vendor_cb.setChecked(True)
+    assert form.is_vendor_cb.isChecked() is True
