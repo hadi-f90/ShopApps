@@ -41,16 +41,19 @@ class BaseModel(Model):
 
 class Contact(BaseModel):
     name = CharField(null=False)
-    phone = CharField(null=True)  # Fixed phone
-    mobile = CharField(null=True)  # Mobile
+    phone = CharField(null=True)
+    mobile = CharField(null=True)
     email = CharField(null=True)
-    organization = CharField(null=True)  # Company
-    title = CharField(null=True)  # Role / Position
+    organization = CharField(null=True)
+    title = CharField(null=True)
     address = TextField(null=True)
-    contact_type = CharField(default="customer")
+    # Independent flags — a contact may be both customer and vendor
+    # (see contacts-mvs-spec.md revision notes).
+    is_customer = BooleanField(default=True)
+    is_vendor = BooleanField(default=False)
     tags = CharField(null=True)
-    note = TextField(null=True)  # Notes
-    tasks = TextField(null=True)  # Future tasks/projects
+    note = TextField(null=True)
+    tasks = TextField(null=True)
 
 
 class Warehouse(BaseModel):
@@ -68,7 +71,7 @@ class Item(BaseModel):
     brand = CharField(null=True)
     # Single "default/preferred supplier" — informational only. This is
     # NOT where per-purchase vendor history lives (multiple suppliers can
-    # supply the same item over time); that belongs to Accounting's future
+    # supply the same item over time); that belongs to Accounting's
     # Purchase record, linked back to Inventory via StockMovement.reference.
     # SET NULL (not RESTRICT) because this is a convenience pointer, not
     # an audit trail — losing it when a contact is deleted is fine.
@@ -91,4 +94,39 @@ class StockMovement(BaseModel):
     movement_type = CharField(null=False, index=True)
     timestamp = DateTimeField(default=_utcnow_naive, index=True)
     reference = CharField(null=True)  # receipt id / purchase id
+    note = TextField(null=True)
+
+
+class Receipt(BaseModel):
+    """Customer sale receipt. Identified by DB id for MVS (no formal
+    sequential invoice numbering yet — see accounting-mvs-spec.md)."""
+
+    contact = ForeignKeyField(
+        Contact, backref="receipts", null=True, on_delete="SET NULL"
+    )
+    timestamp = DateTimeField(default=_utcnow_naive, index=True)
+    total_rial = IntegerField(default=0)
+    note = TextField(null=True)
+
+
+class ReceiptLine(BaseModel):
+    receipt = ForeignKeyField(Receipt, backref="lines", on_delete="CASCADE")
+    item = ForeignKeyField(Item, backref="receipt_lines", on_delete="RESTRICT")
+    quantity = IntegerField(null=False)
+    unit_price_rial = IntegerField(null=False)
+    line_total_rial = IntegerField(null=False)
+
+
+class Purchase(BaseModel):
+    """Vendor purchase that also replenishes stock via a purchase movement."""
+
+    vendor_contact = ForeignKeyField(
+        Contact, backref="purchases", null=True, on_delete="SET NULL"
+    )
+    item = ForeignKeyField(Item, backref="purchases", on_delete="RESTRICT")
+    warehouse = ForeignKeyField(Warehouse, backref="purchases", on_delete="RESTRICT")
+    quantity = IntegerField(null=False)
+    unit_cost_rial = IntegerField(null=False)
+    total_rial = IntegerField(null=False)
+    timestamp = DateTimeField(default=_utcnow_naive, index=True)
     note = TextField(null=True)

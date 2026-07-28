@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QComboBox,
+    QCheckBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -9,19 +9,29 @@ from PySide6.QtWidgets import (
     QTextEdit,
 )
 
-from src.core.db.models import Contact
+from src.core.services.contact_service import (
+    ContactDTO,
+    ContactService,
+    ContactServiceError,
+    LocalContactService,
+)
 
 
 class ContactForm(QDialog):
-    def __init__(self, parent=None, contact=None):
+    def __init__(
+        self,
+        parent=None,
+        contact: ContactDTO = None,
+        service: ContactService = None,
+    ):
         super().__init__(parent)
         self.contact = contact
+        self.service = service or LocalContactService()
         self.setWindowTitle("افزودن/ویرایش مخاطب")
         self.setMinimumWidth(520)
 
         layout = QFormLayout(self)
 
-        # All fields from model
         self.name_edit = QLineEdit()
         self.phone_edit = QLineEdit()
         self.mobile_edit = QLineEdit()
@@ -29,12 +39,13 @@ class ContactForm(QDialog):
         self.organization_edit = QLineEdit()
         self.title_edit = QLineEdit()
         self.address_edit = QTextEdit()
-        self.tags_edit = QLineEdit()  # ← Added Tags
+        self.tags_edit = QLineEdit()
         self.note_edit = QTextEdit()
         self.tasks_edit = QTextEdit()
 
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(["customer", "vendor", "staff"])
+        self.is_customer_cb = QCheckBox("مشتری")
+        self.is_customer_cb.setChecked(True)
+        self.is_vendor_cb = QCheckBox("فروشنده / تامین‌کننده")
 
         layout.addRow("نام کامل *:", self.name_edit)
         layout.addRow("تلفن ثابت:", self.phone_edit)
@@ -44,7 +55,8 @@ class ContactForm(QDialog):
         layout.addRow("سمت/نقش:", self.title_edit)
         layout.addRow("آدرس:", self.address_edit)
         layout.addRow("تگ‌ها:", self.tags_edit)
-        layout.addRow("نوع مخاطب:", self.type_combo)
+        layout.addRow("نقش‌ها:", self.is_customer_cb)
+        layout.addRow("", self.is_vendor_cb)
         layout.addRow("یادداشت:", self.note_edit)
         layout.addRow("تسک‌ها/پروژه‌ها:", self.tasks_edit)
 
@@ -61,40 +73,23 @@ class ContactForm(QDialog):
             self.load_contact()
 
     def load_contact(self):
-        self.name_edit.setText(self.contact.name)
-        self.phone_edit.setText(self.contact.phone or "")
-        self.mobile_edit.setText(self.contact.mobile or "")
-        self.email_edit.setText(self.contact.email or "")
-        self.organization_edit.setText(self.contact.organization or "")
-        self.title_edit.setText(self.contact.title or "")
-        self.address_edit.setText(self.contact.address or "")
-        self.tags_edit.setText(self.contact.tags or "")
-        self.note_edit.setText(self.contact.note or "")
-        self.tasks_edit.setText(self.contact.tasks or "")
-        self.type_combo.setCurrentText(self.contact.contact_type)
+        c = self.contact
+        self.name_edit.setText(c.name)
+        self.phone_edit.setText(c.phone)
+        self.mobile_edit.setText(c.mobile)
+        self.email_edit.setText(c.email)
+        self.organization_edit.setText(c.organization)
+        self.title_edit.setText(c.title)
+        self.address_edit.setText(c.address)
+        self.tags_edit.setText(c.tags)
+        self.note_edit.setText(c.note)
+        self.tasks_edit.setText(c.tasks)
+        self.is_customer_cb.setChecked(c.is_customer)
+        self.is_vendor_cb.setChecked(c.is_vendor)
 
     def save_contact(self):
-        if not self.name_edit.text().strip():
-            QMessageBox.warning(self, "خطا", "نام الزامی است")
-            return
-
-        if self.contact:
-            # Update existing
-            self.contact.name = self.name_edit.text()
-            self.contact.phone = self.phone_edit.text()
-            self.contact.mobile = self.mobile_edit.text()
-            self.contact.email = self.email_edit.text()
-            self.contact.organization = self.organization_edit.text()
-            self.contact.title = self.title_edit.text()
-            self.contact.address = self.address_edit.toPlainText()
-            self.contact.tags = self.tags_edit.text()
-            self.contact.contact_type = self.type_combo.currentText()
-            self.contact.note = self.note_edit.toPlainText()
-            self.contact.tasks = self.tasks_edit.toPlainText()
-            self.contact.save()
-        else:
-            # Create new
-            Contact.create(
+        try:
+            kwargs = dict(
                 name=self.name_edit.text(),
                 phone=self.phone_edit.text(),
                 mobile=self.mobile_edit.text(),
@@ -102,9 +97,17 @@ class ContactForm(QDialog):
                 organization=self.organization_edit.text(),
                 title=self.title_edit.text(),
                 address=self.address_edit.toPlainText(),
+                is_customer=self.is_customer_cb.isChecked(),
+                is_vendor=self.is_vendor_cb.isChecked(),
                 tags=self.tags_edit.text(),
-                contact_type=self.type_combo.currentText(),
                 note=self.note_edit.toPlainText(),
                 tasks=self.tasks_edit.toPlainText(),
             )
+            if self.contact and self.contact.id:
+                self.service.update_contact(self.contact.id, **kwargs)
+            else:
+                self.service.create_contact(**kwargs)
+        except ContactServiceError as exc:
+            QMessageBox.warning(self, "خطا", str(exc))
+            return
         self.accept()
