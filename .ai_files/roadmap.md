@@ -73,7 +73,28 @@ item sale → receipt → stock update).
 - AI-powered chat for queries ("What sold best this month?").
 
 ### Phase 4: Scale & Integrations
-- E-commerce sync.
+- E-commerce sync — publish Inventory items to an external storefront/
+  website. **Status: idea only, not scoped.** Explicitly NOT part of any
+  MVS phase; do not start implementation (schema, UI, or service-layer)
+  until a `spec.md` exists via the Product/Requirements Agent. That spec
+  must resolve at minimum:
+  - Sync direction: Inventory → website only (push), or bidirectional
+    (website sales also need to decrement stock — which would mean a
+    second producer of `sale` movements alongside Accounting's receipt
+    flow, and needs an explicit conflict/ownership rule if so).
+  - Target platform: existing third-party storefront (e.g. WooCommerce/
+    Shopify-style API) vs. something ShopApps hosts itself. These are
+    very different sizes of work and imply different auth/security
+    models.
+  - Item photo support: this needs its own Database Agent decision
+    (new field(s) on `Item` or a separate `ItemImage` table, on-disk
+    storage path convention, file size/type limits) and Security Agent
+    review (upload validation, no execution of uploaded file content) —
+    it is not a detail to fold into a Social sub-app feature.
+  - This is also the first feature that breaks the "offline-first,
+    single-machine" assumption baked into the rest of the architecture
+    (see `technical-conventions.md`) — that trade-off should be named
+    explicitly in the spec, not discovered during implementation.
 - Barcode/QR support.
 - Cloud backup (optional).
 - More languages, full internationalization.
