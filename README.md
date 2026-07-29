@@ -2,53 +2,45 @@
 
 **Integrated Business Management Suite for Karrayan Office Equipment Store**
 
-## Overview
-ShopApps is a modular Python desktop application suite designed to manage all aspects of a small office equipment retail business (inventory, sales, customers, accounting, marketing). Each sub-app can run **independently** yet shares the same database(s) for seamless interconnection.
+Modular PySide6 desktop apps sharing one SQLite database. Primary UI language: **Farsi (RTL)**.
 
-## Key Features
-- Full **RTL/Farsi** support (primary) + English.
-- Agile development: Start with Minimum Viable Features (MVF), then enhance backend logic + UI/UX.
-- Performance: Cython/Numba for bottlenecks.
-- Inter-app data flow (e.g., Contacts → Receipts → Inventory updates).
+## Current status (Phase 1 / MVS)
 
-## Sub-Apps
-- **Contacts Manager**: CRUD contacts, VCF import/export, tags, history.
-- **Social Media & Messaging Manager**: SMS/IM/social messaging, templates with shop signature.
-- **Inventory Manager**: Warehouses, items (specs, prices, brands, vendors, tags), stock adjustments.
-- **Accounting & Receipt Manager**: Receipts/invoices (linked to contacts/inventory), purchases, pricing strategies (discounts/taxes), Toman/Rials, reports.
+End-to-end shop flow works:
 
-## Shared Capabilities
-- Unified SQLite database.
-- Reusable PySide6 UI widgets/dashboards.
-- Exports (PDF/Excel), reporting, future Grok AI integration.
-- Security & audit logs.
+**Contact → Item → Receipt/Purchase → Stock movement**
 
-## Technologies
-- **Python** 3.11+
-- **PySide6** (Qt) for modern RTL desktop UI
-- **Peewee** ORM + SQLite
-- Cython/Numba, python-dotenv, openpyxl, etc.
+| Sub-app | Status |
+|---------|--------|
+| **Contacts** | CRUD, customer/vendor flags, search, phone normalize, **VCF import/export**, delete guard |
+| **Inventory** | Warehouses, items, append-only stock ledger, low-stock |
+| **Accounting** | Receipts (sale movements), purchases (stock in), date filter, dashboard totals |
+| **Reports** | Placeholder — Phase 2 |
+| **Social / Messaging** | Deferred to **Phase 2** (nav shows “در حال توسعه”) |
+| **Settings** | Placeholder |
 
-## Getting Started
-1. Clone & `pip install -e .[development]`
-2. Run sub-app mains or build main launcher.
-3. Use `scripts/scaffold_project.sh`
+## Stack
 
-## Karrayan Focus
-Tailored for office equipment: printers, furniture, stationery — fast sales, supplier tracking, local pricing.
+- Python 3.11+
+- PySide6 (Qt Widgets only)
+- Peewee + SQLite (WAL, foreign keys)
+- jdatetime (Jalali display), qtawesome, python-dotenv
 
-## Development Workflow
+Money: **Rial integers in DB**, Toman display-only.  
+Dates: **Gregorian storage**, Jalali display. Business “today” uses Iran Standard Time.
 
-1. **Describe** a new feature or sub-app in plain language.
-2. **Product Requirements Agent** generates `spec.md` in `.ai_files/specs/`.
-3. **UI/UX Agent** designs the interface.
-4. **App Logic + Database Agents** implement business rules and models.
-5. **Backend Agent** connects everything.
-6. **Testing, Security, Documentation Agents** finalize.
+## Getting started
 
-**Specs Location**: `.ai_files/specs/`
+```bash
+pip install -e ".[development]"
+python -m src.shared_ui.desktop.windows.main_window
+# or your preferred entry point
+pytest tests/ -q
+```
 
-See `.ai_files/roadmap.md` for overall plan and `.claude/skills/` for agent instructions.
+See `.ai_files/roadmap.md` for phases and `.ai_files/specs/` for acceptance criteria.
+`.claude/skills/` documents the multi-agent development pipeline.
 
-## Development Roadmap
-See [`.ai_files/roadmap.md`](.ai_files/roadmap.md) for Minimum Working State (MVS) per app and future features.
+## License
+
+MIT — see `LICENSE`.

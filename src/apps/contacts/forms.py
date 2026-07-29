@@ -108,6 +108,8 @@ class ContactForm(QDialog):
             else:
                 self.service.create_contact(**kwargs)
         except ContactServiceError as exc:
-            QMessageBox.warning(self, "خطا", str(exc))
+            QMessageBox.warning(
+                self, "خطا", getattr(exc, "message_fa", None) or str(exc)
+            )
             return
         self.accept()

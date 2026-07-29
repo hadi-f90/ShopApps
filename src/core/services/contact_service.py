@@ -1,7 +1,7 @@
 """
 Backend service layer for Contacts.
 
-Full MVS ContactService: CRUD + customer/vendor filtered lists.
+Full MVS ContactService: CRUD + customer/vendor filtered lists + VCF I/O.
 UI and other sub-apps must use this Protocol — never import the Contact
 model directly.
 """
@@ -9,10 +9,18 @@ model directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Protocol
+from pathlib import Path
+from typing import List, Optional, Protocol, Union
 
 from peewee import DoesNotExist
 
+from src.apps.contacts.vcf import (
+    MAX_VCF_BYTES,
+    VCardData,
+    VcfParseResult,
+    cards_to_vcf,
+    parse_vcf_text,
+)
 from src.core.db.models import Contact, Item, Purchase, Receipt
 from src.core.errors import ContactError, ContactInUseError, ContactServiceError
 
@@ -30,7 +38,6 @@ def normalize_phone(value: str | None) -> str:
     return "".join(out)
 
 
-
 @dataclass(frozen=True)
 class ContactDTO:
     id: Optional[int]
@@ -46,6 +53,13 @@ class ContactDTO:
     tags: str = ""
     note: str = ""
     tasks: str = ""
+
+
+@dataclass(frozen=True)
+class VcfImportReport:
+    created: int
+    skipped: int
+    errors: tuple[str, ...] = ()
 
 
 class ContactService(Protocol):
@@ -76,6 +90,16 @@ class ContactService(Protocol):
     def list_vendors(self, search: str = "") -> List[ContactDTO]: ...
 
     def delete_contact(self, contact_id: int) -> None: ...
+
+    def import_vcf(
+        self,
+        source: Union[str, Path, bytes],
+        *,
+        default_is_customer: bool = True,
+        default_is_vendor: bool = False,
+    ) -> VcfImportReport: ...
+
+    def export_vcf(self, contact_ids: Optional[List[int]] = None) -> str: ...
 
 
 class LocalContactService:
@@ -208,8 +232,6 @@ class LocalContactService:
         except DoesNotExist:
             raise ContactServiceError("مخاطب مورد نظر یافت نشد")
 
-        # Integrity: do not hard-delete if business records still point here.
-        # (Security + Database agents — avoid silent SET NULL data loss.)
         reasons: list[str] = []
         if Receipt.select().where(Receipt.contact == contact_id).exists():
             reasons.append("فاکتور فروش")
@@ -225,3 +247,100 @@ class LocalContactService:
             )
 
         Contact.get_by_id(contact_id).delete_instance()
+
+    def import_vcf(
+        self,
+        source: Union[str, Path, bytes],
+        *,
+        default_is_customer: bool = True,
+        default_is_vendor: bool = False,
+    ) -> VcfImportReport:
+        """Import contacts from a .vcf path, raw bytes, or text string.
+
+        Security: size limit, text decode only, allowlisted properties in parser.
+        Does not deduplicate (MVS). Defaults roles to customer unless specified.
+        """
+        if isinstance(source, (str, Path)) and not isinstance(source, bytes):
+            path = Path(source)
+            if not path.is_file():
+                raise ContactServiceError("فایل VCF یافت نشد")
+            size = path.stat().st_size
+            if size > MAX_VCF_BYTES:
+                raise ContactServiceError(
+                    f"حجم فایل از سقف {MAX_VCF_BYTES // (1024 * 1024)} مگابایت بیشتر است"
+                )
+            raw = path.read_bytes()
+        elif isinstance(source, bytes):
+            if len(source) > MAX_VCF_BYTES:
+                raise ContactServiceError(
+                    f"حجم داده از سقف {MAX_VCF_BYTES // (1024 * 1024)} مگابایت بیشتر است"
+                )
+            raw = source
+        else:
+            raw = str(source).encode("utf-8")
+
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                text = raw.decode("latin-1")
+
+        parsed: VcfParseResult = parse_vcf_text(text)
+        if parsed.errors and not parsed.cards:
+            raise ContactServiceError("؛ ".join(parsed.errors))
+
+        created = 0
+        for card in parsed.cards:
+            try:
+                self.create_contact(
+                    name=card.name,
+                    phone=card.phone,
+                    mobile=card.mobile,
+                    email=card.email,
+                    organization=card.organization,
+                    title=card.title,
+                    address=card.address,
+                    tags=card.tags,
+                    note=card.note,
+                    is_customer=default_is_customer,
+                    is_vendor=default_is_vendor,
+                )
+                created += 1
+            except ContactServiceError:
+                parsed.skipped += 1
+
+        return VcfImportReport(
+            created=created,
+            skipped=parsed.skipped,
+            errors=tuple(parsed.errors),
+        )
+
+    def export_vcf(self, contact_ids: Optional[List[int]] = None) -> str:
+        """Export contacts as VCF 3.0 text. None = all contacts."""
+        if contact_ids is not None:
+            contacts = []
+            for cid in contact_ids:
+                try:
+                    contacts.append(self.get_contact(cid))
+                except ContactServiceError:
+                    continue
+        else:
+            contacts = self.list_contacts()
+
+        cards = [
+            VCardData(
+                name=c.name,
+                phone=c.phone,
+                mobile=c.mobile,
+                email=c.email,
+                organization=c.organization,
+                title=c.title,
+                address=c.address,
+                tags=c.tags,
+                note=c.note,
+            )
+            for c in contacts
+        ]
+        return cards_to_vcf(cards)
