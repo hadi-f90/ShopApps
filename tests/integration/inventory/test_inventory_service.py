@@ -19,6 +19,7 @@ def service():
 
 
 def _make_vendor_contact(name="فروشنده تست", mobile="09120000000"):
+
     return Contact.create(name=name, mobile=mobile, is_customer=False, is_vendor=True)
 
 
