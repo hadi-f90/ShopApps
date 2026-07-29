@@ -42,9 +42,10 @@ interconnections.
 - List of past receipts.
 - (PDF receipt export moved to Phase 2 — see Accounting spec revision notes.)
 
-### 5. Social/Messaging (MVS)
-- Message template CRUD + shop signature.
-- Manual send simulation (console or basic UI).
+### 5. Social/Messaging
+- **Deferred to Phase 2.** Not required for the MVS success criterion
+  (contact → sale → receipt → stock). Sidebar entry remains a labeled
+  placeholder only.
 
 ### Interconnections (MVS)
 - Receipts create `sale` stock movements in Inventory.
@@ -62,7 +63,8 @@ item sale → receipt → stock update).
 - Pricing strategies (discounts, wholesale).
 - Multi-currency, taxes, logistics.
 - User roles/auth.
-- Social: Real SMS/IM integration (Twilio/API).
+- Social: Message template CRUD + shop signature; manual send simulation;
+  later real SMS/IM integration (Twilio/API).
 - Cython performance for large inventories (only after profiling shows a
   real bottleneck).
 - **Contacts — structured name fields (optional):** split `name` into
