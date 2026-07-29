@@ -62,3 +62,29 @@ def test_empty_and_nameless():
     r = parse_vcf_text("BEGIN:VCARD\nVERSION:3.0\nEND:VCARD\n")
     assert r.skipped >= 1
     assert len(r.cards) == 0
+
+def test_quoted_printable_utf8_fn():
+    """Phone exports often use ENCODING=QUOTED-PRINTABLE;CHARSET=UTF-8."""
+    # "احمد" in UTF-8 as quoted-printable
+    text = (
+        "BEGIN:VCARD\n"
+        "VERSION:3.0\n"
+        "FN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:"
+        "=D8=A7=D8=AD=D9=85=D8=AF\n"
+        "END:VCARD\n"
+    )
+    result = parse_vcf_text(text)
+    assert len(result.cards) == 1
+    assert result.cards[0].name == "احمد"
+
+
+def test_qp_heuristic_without_encoding_param():
+    text = (
+        "BEGIN:VCARD\n"
+        "VERSION:3.0\n"
+        "FN:=D8=A7=D8=AD=D9=85=D8=AF=20=DA=A9=DB=8C=D9=88=D8=A7=D9=86\n"
+        "END:VCARD\n"
+    )
+    result = parse_vcf_text(text)
+    assert len(result.cards) == 1
+    assert "احمد" in result.cards[0].name

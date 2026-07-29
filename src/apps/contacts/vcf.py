@@ -6,14 +6,20 @@ Pure functions — no Peewee, no Qt. Security constraints (Security Agent):
 - Allowlisted property names only; unknown properties ignored.
 - PHOTO / binary values are skipped (no attachment import in MVS).
 - Callers must enforce file size and contact-count limits before/after parse.
+
+Encoding: many phone/export VCFs use QUOTED-PRINTABLE + CHARSET=UTF-8
+(e.g. FN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:=D8=A7=D8=AD...).
+Decoded via the stdlib ``quopri`` module — no third-party VCF library required.
 """
 
 from __future__ import annotations
 
+import base64
+import quopri
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-# Properties we map into Contact fields. Everything else is ignored.
 ALLOWED_PROPERTIES = frozenset(
     {
         "BEGIN",
@@ -27,18 +33,19 @@ ALLOWED_PROPERTIES = frozenset(
         "TITLE",
         "ADR",
         "NOTE",
-        "CATEGORIES",  # maps to tags
+        "CATEGORIES",
     }
 )
 
 MAX_VCF_BYTES = 2 * 1024 * 1024  # 2 MiB
 MAX_CARDS_PER_IMPORT = 500
 
+_QP_HEX = re.compile(r"=[0-9A-Fa-f]{2}")
+_PROP_START = re.compile(r"^[A-Za-z0-9._-]+[;:]")
+
 
 @dataclass
 class VCardData:
-    """One parsed vCard → fields suitable for ContactService.create_contact."""
-
     name: str = ""
     phone: str = ""
     mobile: str = ""
@@ -53,15 +60,38 @@ class VCardData:
 @dataclass
 class VcfParseResult:
     cards: List[VCardData] = field(default_factory=list)
-    skipped: int = 0  # cards without a usable name
+    skipped: int = 0
     errors: List[str] = field(default_factory=list)
 
 
 def _unfold(text: str) -> List[str]:
-    """RFC 6350 line unfolding: continuation lines start with space or tab."""
+    """Unfold VCF lines: space/tab continuations + quoted-printable soft breaks.
+
+    A trailing ``=`` is a QP soft line break only when the *next* line continues
+    the value. If the next line is a new property (e.g. ``END:VCARD``), the
+    trailing ``=`` is dropped and the next line is left intact.
+    """
     raw = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+    merged: List[str] = []
+    i = 0
+    while i < len(raw):
+        line = raw[i]
+        while line.endswith("=") and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            if _PROP_START.match(nxt):
+                line = line[:-1]
+                break
+            if nxt.startswith((" ", "\t")):
+                line = line[:-1] + nxt[1:]
+            else:
+                line = line[:-1] + nxt
+            i += 1
+        merged.append(line)
+        i += 1
+
     lines: List[str] = []
-    for line in raw:
+    for line in merged:
         if lines and line.startswith((" ", "\t")):
             lines[-1] += line[1:]
         else:
@@ -69,16 +99,63 @@ def _unfold(text: str) -> List[str]:
     return lines
 
 
-def _split_prop(line: str) -> tuple[str, str]:
-    """Return (property_name_upper, value). Drops parameters after PROP."""
+def _param_map(left: str) -> dict[str, str]:
+    params: dict[str, str] = {}
+    parts = left.split(";")
+    for part in parts[1:]:
+        if "=" not in part:
+            params[part.strip().upper()] = ""
+            continue
+        key, val = part.split("=", 1)
+        params[key.strip().upper()] = val.strip().strip('"')
+    return params
+
+
+def _decode_value(left: str, value: str) -> str:
+    """Apply CHARSET / ENCODING (quoted-printable, base64) to a property value."""
+    if not value:
+        return ""
+    params = _param_map(left)
+    encoding = (params.get("ENCODING") or "").upper().replace(" ", "")
+    charset = params.get("CHARSET") or "utf-8"
+
+    looks_qp = bool(_QP_HEX.search(value))
+    use_qp = encoding in ("QUOTED-PRINTABLE", "QP") or (
+        looks_qp and encoding not in ("BASE64", "B", "8BIT", "7BIT")
+    )
+
+    if use_qp:
+        try:
+            raw = quopri.decodestring(value.encode("ascii", errors="replace"))
+        except Exception:
+            return value
+        try:
+            return raw.decode(charset, errors="replace")
+        except LookupError:
+            return raw.decode("utf-8", errors="replace")
+
+    if encoding in ("BASE64", "B"):
+        try:
+            pad = (-len(value)) % 4
+            raw = base64.b64decode(value + ("=" * pad))
+            try:
+                return raw.decode(charset, errors="replace")
+            except LookupError:
+                return raw.decode("utf-8", errors="replace")
+        except Exception:
+            return value
+
+    return value
+
+
+def _split_prop(line: str) -> tuple[str, str, str]:
     if ":" not in line:
-        return "", ""
+        return "", "", ""
     left, value = line.split(":", 1)
     name = left.split(";", 1)[0].strip().upper()
-    # group.PREFIX like item1.TEL → TEL
     if "." in name:
         name = name.split(".")[-1]
-    return name, value.strip()
+    return name, left, value.strip()
 
 
 def _is_mobile_tel(params_and_name: str) -> bool:
@@ -90,7 +167,6 @@ def _is_mobile_tel(params_and_name: str) -> bool:
 
 
 def parse_vcf_text(text: str) -> VcfParseResult:
-    """Parse VCF text into VCardData list. Invalid structure yields errors, not raise."""
     result = VcfParseResult()
     if not text or not text.strip():
         result.errors.append("فایل خالی است")
@@ -113,7 +189,6 @@ def parse_vcf_text(text: str) -> VcfParseResult:
             return
         phone = tel_home[0] if tel_home else (tel_cell[1] if len(tel_cell) > 1 else "")
         mobile = tel_cell[0] if tel_cell else ""
-        # If only one TEL and not marked cell, treat as phone
         if not mobile and not phone and tel_home:
             phone = tel_home[0]
         if not mobile and tel_cell:
@@ -139,20 +214,20 @@ def parse_vcf_text(text: str) -> VcfParseResult:
     for line in lines:
         if not line.strip():
             continue
-        # Full left side for TEL type detection
-        left = line.split(":", 1)[0] if ":" in line else ""
-        prop, value = _split_prop(line)
+        prop, left, raw_value = _split_prop(line)
         if not prop:
             continue
         if prop not in ALLOWED_PROPERTIES:
-            continue  # ignore PHOTO, X-*, etc.
+            continue
 
-        if prop == "BEGIN" and value.upper() == "VCARD":
+        value = _decode_value(left, raw_value)
+
+        if prop == "BEGIN" and raw_value.upper() == "VCARD":
             _flush()
             current = {}
             tel_home, tel_cell = [], []
             continue
-        if prop == "END" and value.upper() == "VCARD":
+        if prop == "END" and raw_value.upper() == "VCARD":
             _flush()
             continue
         if current is None:
@@ -160,10 +235,8 @@ def parse_vcf_text(text: str) -> VcfParseResult:
         if prop == "FN":
             current["fn"] = value
         elif prop == "N" and "fn" not in current:
-            # N: Family;Given;... → "Given Family" or join non-empty
             parts = [p.strip() for p in value.split(";") if p.strip()]
             if parts:
-                # Prefer Given + Family order when 2+
                 if len(parts) >= 2:
                     current["n"] = f"{parts[1]} {parts[0]}".strip()
                 else:
@@ -180,7 +253,6 @@ def parse_vcf_text(text: str) -> VcfParseResult:
         elif prop == "TITLE" and "title" not in current:
             current["title"] = value
         elif prop == "ADR" and "adr" not in current:
-            # ADR: PO;ext;street;city;region;postcode;country
             parts = [p.strip() for p in value.split(";")]
             current["adr"] = ", ".join(p for p in parts if p)
         elif prop == "NOTE" and "note" not in current:
