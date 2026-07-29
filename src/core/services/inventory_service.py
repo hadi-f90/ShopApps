@@ -1,13 +1,11 @@
 """
 Backend service layer for Inventory.
 
-Wires the App Logic rules (src/apps/inventory/inventory_logic.py) to
-persisted data (Peewee models in src/core/db/models.py) and exposes a
-narrow Protocol interface so UI code — and later, other sub-apps such as
-Accounting — never import ORM models directly. This is the seam that will
-let a future remote (LAN) implementation be substituted without changing
-any sub-app's code.
+Wires App Logic (inventory_logic) to Peewee models and exposes a narrow
+Protocol so UI and other sub-apps never import ORM models directly.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,16 +15,8 @@ from peewee import DoesNotExist, IntegrityError
 
 from src.apps.inventory import inventory_logic as logic
 from src.core.db.models import Item, StockMovement, Warehouse, db
+from src.core.errors import InventoryServiceError, InsufficientStockError
 from src.core.services.contact_service import ContactService, LocalContactService
-
-
-class InventoryServiceError(Exception):
-    """Domain error surfaced to the UI layer. Message text is Farsi-facing."""
-
-
-# ---------------------------------------------------------------------------
-# DTOs — plain dataclasses. Peewee model instances never cross this boundary.
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -45,11 +35,11 @@ class ItemDTO:
     sale_price: int  # Rial
     brand: str = ""
     vendor_contact_id: Optional[int] = None
-    vendor_name: str = ""  # resolved for display via ContactService, not persisted here
+    vendor_name: str = ""
     tags: str = ""
     low_stock_threshold: int = logic.DEFAULT_LOW_STOCK_THRESHOLD
     is_active: bool = True
-    on_hand_quantity: int = 0  # store-wide, computed — not a persisted column
+    on_hand_quantity: int = 0
 
 
 @dataclass(frozen=True)
@@ -62,11 +52,6 @@ class StockMovementDTO:
     timestamp: Optional[datetime] = None
     reference: str = ""
     note: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Protocol
-# ---------------------------------------------------------------------------
 
 
 class InventoryService(Protocol):
@@ -108,21 +93,11 @@ class InventoryService(Protocol):
     def get_low_stock_items(self) -> List[ItemDTO]: ...
 
 
-# ---------------------------------------------------------------------------
-# Local (in-process) implementation — the only one that exists for MVS.
-# ---------------------------------------------------------------------------
-
-
 class LocalInventoryService:
     """Direct in-process Peewee-backed implementation of InventoryService."""
 
     def __init__(self, contact_service: ContactService = None):
-        # DI, same pattern as InventoryManager's own service injection —
-        # swap in a different ContactService (e.g. a future remote one)
-        # without changing this class.
         self.contact_service = contact_service or LocalContactService()
-
-    # -- DTO translation --------------------------------------------------
 
     def _to_warehouse_dto(self, w: Warehouse) -> WarehouseDTO:
         return WarehouseDTO(
@@ -134,7 +109,7 @@ class LocalInventoryService:
         if item.vendor_contact_id:
             try:
                 vendor_name = self.contact_service.get_contact(item.vendor_contact_id).name
-            except DoesNotExist:
+            except Exception:
                 vendor_name = ""
         return ItemDTO(
             id=item.id,
@@ -162,8 +137,6 @@ class LocalInventoryService:
             note=m.note or "",
         )
 
-    # -- Warehouses ---------------------------------------------------------
-
     def create_warehouse(self, name: str, location: str = "") -> WarehouseDTO:
         errors = logic.validate_warehouse_fields(name)
         if errors:
@@ -178,8 +151,6 @@ class LocalInventoryService:
         return [
             self._to_warehouse_dto(w) for w in Warehouse.select().order_by(Warehouse.name)
         ]
-
-    # -- Items ----------------------------------------------------------------
 
     def create_item(
         self,
@@ -206,8 +177,13 @@ class LocalInventoryService:
                 tags=tags or None,
                 low_stock_threshold=low_stock_threshold,
             )
-        except IntegrityError:
-            raise InventoryServiceError("فروشنده انتخاب‌شده معتبر نیست")
+        except IntegrityError as exc:
+            # Only the vendor FK is a realistic IntegrityError on Item today;
+            # still avoid a blanket "invalid vendor" for future constraints.
+            msg = str(exc).lower()
+            if "vendor" in msg or "foreign" in msg or "contact" in msg:
+                raise InventoryServiceError("فروشنده انتخاب‌شده معتبر نیست", cause=exc)
+            raise InventoryServiceError(f"ثبت کالا ناموفق بود: {exc}", cause=exc)
         return self._to_item_dto(item)
 
     def update_item(self, item_id: int, **fields) -> ItemDTO:
@@ -241,8 +217,11 @@ class LocalInventoryService:
                 setattr(item, field_name, fields[field_name])
         try:
             item.save()
-        except IntegrityError:
-            raise InventoryServiceError("فروشنده انتخاب‌شده معتبر نیست")
+        except IntegrityError as exc:
+            msg = str(exc).lower()
+            if "vendor" in msg or "foreign" in msg or "contact" in msg:
+                raise InventoryServiceError("فروشنده انتخاب‌شده معتبر نیست", cause=exc)
+            raise InventoryServiceError(f"به‌روزرسانی کالا ناموفق بود: {exc}", cause=exc)
         return self._to_item_dto(item)
 
     def list_items(self, search: str = "") -> List[ItemDTO]:
@@ -262,8 +241,6 @@ class LocalInventoryService:
             raise InventoryServiceError("کالای مورد نظر یافت نشد")
         return self._to_item_dto(item)
 
-    # -- Stock movements --------------------------------------------------------
-
     def record_movement(
         self,
         item_id: int,
@@ -276,14 +253,14 @@ class LocalInventoryService:
         try:
             logic.validate_movement_sign(movement_type, quantity_delta)
         except logic.InventoryLogicError as exc:
-            raise InventoryServiceError(str(exc))
+            raise InventoryServiceError(str(exc), cause=exc)
 
         if quantity_delta < 0:
             on_hand = self.get_on_hand_quantity(item_id, warehouse_id)
             try:
                 logic.validate_sale_does_not_exceed_stock(on_hand, quantity_delta)
             except logic.InventoryLogicError as exc:
-                raise InventoryServiceError(str(exc))
+                raise InsufficientStockError(str(exc), cause=exc)
 
         with db.atomic():
             try:
@@ -295,9 +272,10 @@ class LocalInventoryService:
                     reference=reference or None,
                     note=note or None,
                 )
-            except IntegrityError:
+            except IntegrityError as exc:
                 raise InventoryServiceError(
-                    "ثبت تراکنش ناموفق بود: کالا یا انبار مورد نظر معتبر نیست"
+                    "ثبت تراکنش ناموفق بود: کالا یا انبار مورد نظر معتبر نیست",
+                    cause=exc,
                 )
         return self._to_movement_dto(movement)
 
@@ -310,8 +288,12 @@ class LocalInventoryService:
         return logic.compute_on_hand_quantity(m.quantity_delta for m in query)
 
     def get_low_stock_items(self) -> List[ItemDTO]:
-        candidates = (self._to_item_dto(i) for i in Item.select().where(Item.is_active == True))  # noqa: E712
+        candidates = (
+            self._to_item_dto(i)
+            for i in Item.select().where(Item.is_active == True)  # noqa: E712
+        )
         return [
-            dto for dto in candidates
+            dto
+            for dto in candidates
             if logic.is_low_stock(dto.on_hand_quantity, dto.low_stock_threshold)
         ]

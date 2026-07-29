@@ -1,0 +1,5 @@
+# Add to ContactsManager class in src/apps/contacts/main.py:
+
+def refresh(self):
+    """Called from MainWindow.switch_to_module after navigation."""
+    self.load_data()

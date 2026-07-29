@@ -128,3 +128,7 @@ class ContactsManager(QWidget):
                 QMessageBox.warning(self, "خطا", str(exc))
                 return
             self.load_data()
+
+    def refresh(self):
+        """Called from MainWindow.switch_to_module after navigation."""
+        self.load_data()
