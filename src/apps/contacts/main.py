@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
 )
 
 from src.apps.contacts.forms import ContactForm
+from src.apps.contacts.import_dialog import VcfImportDialog
+from src.apps.contacts.duplicates_dialog import DuplicatesDialog
 from src.core.services.contact_service import (
     ContactService,
     ContactServiceError,
@@ -62,6 +64,7 @@ class ContactsManager(QWidget):
         self.delete_btn = QPushButton("🗑️ حذف")
         self.import_btn = QPushButton("📥 ورود VCF")
         self.export_btn = QPushButton("📤 خروجی VCF")
+        self.dup_btn = QPushButton("🔍 تکراری‌ها")
         self.refresh_btn = QPushButton("🔄 بروزرسانی")
 
         self.add_btn.clicked.connect(self.add_contact)
@@ -69,6 +72,7 @@ class ContactsManager(QWidget):
         self.delete_btn.clicked.connect(self.delete_contacts)
         self.import_btn.clicked.connect(self.import_vcf)
         self.export_btn.clicked.connect(self.export_vcf)
+        self.dup_btn.clicked.connect(self.find_duplicates)
         self.refresh_btn.clicked.connect(lambda: self.load_data(reset_page=True))
 
         toolbar.addWidget(self.add_btn)
@@ -76,6 +80,7 @@ class ContactsManager(QWidget):
         toolbar.addWidget(self.delete_btn)
         toolbar.addWidget(self.import_btn)
         toolbar.addWidget(self.export_btn)
+        toolbar.addWidget(self.dup_btn)
         toolbar.addWidget(self.refresh_btn)
         toolbar.addStretch()
         layout.addLayout(toolbar)
@@ -273,18 +278,36 @@ class ContactsManager(QWidget):
             self,
             "ورود از فایل VCF",
             "",
-            "vCard (*.vcf *.vcard);;All files (*)",
+            "فایل vCard (*.vcf *.vcard);;همه پرونده‌ها (*)",
         )
         if not path:
             return
         try:
-            report = self.service.import_vcf(path)
+            rows, parse_errors = self.service.preview_vcf(path)
         except ContactServiceError as exc:
             QMessageBox.warning(self, "خطا", _err(exc))
             return
-        msg = f"وارد شد: {report.created}"
+        if not rows:
+            QMessageBox.information(self, "ورود VCF", "مخاطبی در فایل یافت نشد.")
+            return
+        dlg = VcfImportDialog(rows, parent=self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        try:
+            report = self.service.import_vcf_cards(
+                dlg.selected_cards,
+                duplicate_policy=dlg.duplicate_policy,
+            )
+        except ContactServiceError as exc:
+            QMessageBox.warning(self, "خطا", _err(exc))
+            return
+        msg = f"ایجاد شد: {report.created}"
+        if report.merged:
+            msg += f"\nادغام شد: {report.merged}"
         if report.skipped:
-            msg += f"\nرد شد (بدون نام یا نامعتبر): {report.skipped}"
+            msg += f"\nرد شد: {report.skipped}"
+        if parse_errors:
+            msg += "\n" + "\n".join(parse_errors)
         if report.errors:
             msg += "\n" + "\n".join(report.errors)
         QMessageBox.information(self, "ورود VCF", msg)
@@ -295,7 +318,7 @@ class ContactsManager(QWidget):
             self,
             "خروجی VCF",
             "contacts.vcf",
-            "vCard (*.vcf);;All files (*)",
+            "فایل vCard (*.vcf);;همه پرونده‌ها (*)",
         )
         if not path:
             return
@@ -314,6 +337,11 @@ class ContactsManager(QWidget):
             return
         QMessageBox.information(self, "خروجی VCF", f"ذخیره شد:\n{path}")
 
+    def find_duplicates(self):
+        dlg = DuplicatesDialog(self.service, parent=self)
+        dlg.exec()
+        self.load_data()
+
     def refresh(self):
-        """Called from MainWindow.switch_to_module after navigation."""
+        """پس از ناوبری از پنجره اصلی فراخوانی می‌شود."""
         self.load_data()
