@@ -3,7 +3,6 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
-    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
@@ -24,32 +23,10 @@ from src.core.services.inventory_service import (
     ItemDTO,
     WarehouseDTO,
 )
-
-# QSpinBox wraps a 32-bit C int (max ~2.1 billion) — too small for Rial
-# amounts, which routinely run into the billions for higher-value office
-# equipment (a printer at 45,000,000 Rial is unremarkable). QDoubleSpinBox
-# uses a C double internally, so it comfortably holds integer Rial values
-# up to ~10^12 with 0 decimal places shown and stored.
-MAX_RIAL_AMOUNT = 999_999_999_999
-
-
-def _rial_spinbox() -> QDoubleSpinBox:
-    box = QDoubleSpinBox()
-    box.setDecimals(0)
-    box.setRange(0, MAX_RIAL_AMOUNT)
-    box.setSuffix(" ریال")
-    box.setGroupSeparatorShown(True)
-    return box
+from src.shared_ui.desktop.widgets.rial_spinbox import make_rial_spinbox
 
 
 class VendorPickerDialog(QDialog):
-    """Search/select a supplier from Contacts filtered to vendors.
-
-    Reads through ContactService only — never imports the Contact model —
-    so Inventory doesn't repeat the direct-ORM-import pattern that's
-    already flagged as debt in the Contacts sub-app.
-    """
-
     def __init__(self, contact_service: ContactService, parent=None):
         super().__init__(parent)
         self.contact_service = contact_service
@@ -124,17 +101,13 @@ class ItemForm(QDialog):
         self.brand_edit = QLineEdit()
         self.tags_edit = QLineEdit()
 
-        self.purchase_price_edit = _rial_spinbox()
-        self.sale_price_edit = _rial_spinbox()
+        self.purchase_price_edit = make_rial_spinbox()
+        self.sale_price_edit = make_rial_spinbox()
 
         self.threshold_edit = QSpinBox()
         self.threshold_edit.setRange(0, 1_000_000)
         self.threshold_edit.setValue(logic.DEFAULT_LOW_STOCK_THRESHOLD)
 
-        # Single "default/preferred supplier" — informational, sourced from
-        # Contacts. This is NOT per-purchase vendor history (an item can be
-        # bought from several suppliers over time) — that belongs to
-        # Accounting's future Purchase records.
         self.vendor_display = QLineEdit()
         self.vendor_display.setReadOnly(True)
         self.vendor_display.setPlaceholderText("فروشنده‌ای انتخاب نشده")
@@ -215,7 +188,7 @@ class ItemForm(QDialog):
                     low_stock_threshold=self.threshold_edit.value(),
                 )
         except InventoryServiceError as exc:
-            QMessageBox.warning(self, "خطا", str(exc))
+            QMessageBox.warning(self, "خطا", getattr(exc, "message_fa", str(exc)))
             return
         self.accept()
 
@@ -254,17 +227,12 @@ class WarehouseForm(QDialog):
                 location=self.location_edit.text(),
             )
         except InventoryServiceError as exc:
-            QMessageBox.warning(self, "خطا", str(exc))
+            QMessageBox.warning(self, "خطا", getattr(exc, "message_fa", str(exc)))
             return
         self.accept()
 
 
 class StockMovementForm(QDialog):
-    """Covers internal_consumption, spoilage, manual_adjustment (+/-), and
-    manual entry of purchase/sale for cases outside a formal Accounting flow
-    (Accounting itself calls InventoryService.record_movement directly for
-    receipts and purchases — see inventory-mvs-spec.md, 'Stock Movements')."""
-
     MOVEMENT_LABELS = {
         "purchase": "خرید (ورود دستی)",
         "sale": "فروش (ورود دستی)",
@@ -273,7 +241,12 @@ class StockMovementForm(QDialog):
         "manual_adjustment": "اصلاح دستی (شمارش انبار)",
     }
 
-    def __init__(self, service: InventoryService, parent=None):
+    def __init__(
+        self,
+        service: InventoryService,
+        parent=None,
+        prefill_item_id: Optional[int] = None,
+    ):
         super().__init__(parent)
         self.service = service
         self.setWindowTitle("ثبت تراکنش موجودی")
@@ -293,7 +266,7 @@ class StockMovementForm(QDialog):
 
         self.note_edit = QTextEdit()
 
-        self._populate_combos()
+        self._populate_combos(prefill_item_id)
 
         layout.addRow("کالا *:", self.item_combo)
         layout.addRow("انبار *:", self.warehouse_combo)
@@ -310,11 +283,15 @@ class StockMovementForm(QDialog):
         btn_layout.addWidget(cancel_btn)
         layout.addRow(btn_layout)
 
-    def _populate_combos(self):
+    def _populate_combos(self, prefill_item_id: Optional[int] = None):
         for item in self.service.list_items():
             self.item_combo.addItem(item.name, item.id)
         for w in self.service.list_warehouses():
             self.warehouse_combo.addItem(w.name, w.id)
+        if prefill_item_id is not None:
+            idx = self.item_combo.findData(prefill_item_id)
+            if idx >= 0:
+                self.item_combo.setCurrentIndex(idx)
 
     def save_movement(self):
         item_id = self.item_combo.currentData()
@@ -335,6 +312,6 @@ class StockMovementForm(QDialog):
                 note=self.note_edit.toPlainText(),
             )
         except InventoryServiceError as exc:
-            QMessageBox.warning(self, "خطا", str(exc))
+            QMessageBox.warning(self, "خطا", getattr(exc, "message_fa", str(exc)))
             return
         self.accept()

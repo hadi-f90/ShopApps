@@ -31,6 +31,11 @@ it doesn't redefine them.
 - Every UI element showing a monetary value must make the unit unambiguous —
   this is the single highest-risk correctness area in the project.
 
+## Currency helpers
+
+- `rial_to_toman` / `toman_to_rial` live in `src/core/currency.py` (shared).
+  Do not re-implement them inside a single sub-app's logic module.
+
 ## Dates
 - All dates/timestamps are stored in the database as standard **Gregorian**
   (ISO 8601) — this is what the DB, migrations, and sorting/comparison logic
@@ -38,6 +43,14 @@ it doesn't redefine them.
 - **Jalali (Solar Hijri)** display is a presentation-layer conversion only,
   applied when rendering to the user and when parsing Jalali input fields.
   Use `jdatetime` or `persiantools`. Never store Jalali dates directly.
+
+## Timezone
+- Timestamps are **stored** as naive UTC (see `models._utcnow_naive`).
+- **Business calendar** (dashboard "today", receipt date filters) uses
+  **Iran Standard Time (UTC+3:30, no DST)**.
+- Convert Iran day bounds to naive UTC via `src/core/timezone.py` before
+  comparing to stored timestamps. Do not use `date.today()` or
+  `datetime.now(timezone.utc).date()` for "today" business totals.
 
 ## Inter-app architecture
 - Modular monolith: one shared `core` library (models, business logic, service
@@ -55,6 +68,13 @@ it doesn't redefine them.
 Stock quantity is **never mutated directly**. Every change is recorded as an
 append-only **movement**: item, warehouse, quantity delta (+/-), movement
 type, timestamp, optional reference (receipt id / purchase id), optional note.
+
+## Inventory quantity rules (documented decisions)
+
+- **Oversell validation is warehouse-scoped**: when recording a decreasing
+  movement, on-hand is checked for that `(item, warehouse)` pair only.
+- **Low-stock alerting is store-wide**: on-hand is the sum of movements
+  across all warehouses for the item, compared to `low_stock_threshold`.
 
 MVS movement types:
 | Type | Delta | Trigger |

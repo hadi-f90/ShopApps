@@ -31,10 +31,10 @@ except ImportError:
 from src.apps.accounting.main import AccountingManager
 from src.apps.contacts.main import ContactsManager
 from src.apps.inventory.main import InventoryManager
+from src.core.currency import rial_to_toman
 from src.core.services.accounting_service import LocalAccountingService
 from src.core.services.contact_service import LocalContactService
 from src.core.services.inventory_service import LocalInventoryService
-from src.apps.inventory import inventory_logic as logic
 
 
 def load_fonts():
@@ -77,7 +77,6 @@ def create_app_stylesheet():
         QLabel#sidebar-title {
             font-size: 24px; font-weight: bold; padding: 20px; color: white;
         }
-        /* Default nav buttons */
         QFrame#sidebar QPushButton {
             background-color: #2c3e50; color: white; border: none;
             padding: 14px 20px; qproperty-layoutDirection: RightToLeft;
@@ -87,7 +86,6 @@ def create_app_stylesheet():
         }
         QFrame#sidebar QPushButton:hover { background-color: #34495e; }
         QFrame#sidebar QPushButton:pressed { background-color: #1a252f; }
-        /* Active module — matches sidebar-navigation-design.md */
         QFrame#sidebar QPushButton#nav-active {
             background-color: #1a252f;
             border-right: 4px solid #3498db;
@@ -107,21 +105,13 @@ def create_app_stylesheet():
 
 
 def make_page_title(text: str) -> QLabel:
-    """Shared page heading used by Dashboard and every sub-app."""
     label = QLabel(text)
     label.setObjectName("page-title")
     return label
 
 
 class DashboardPage(QWidget):
-    """Live summary cards via core/services (main-window-spec)."""
-
-    def __init__(
-        self,
-        inventory: LocalInventoryService,
-        accounting: LocalAccountingService,
-        parent=None,
-    ):
+    def __init__(self, inventory, accounting, parent=None):
         super().__init__(parent)
         self.inventory = inventory
         self.accounting = accounting
@@ -147,7 +137,6 @@ class DashboardPage(QWidget):
         t.setObjectName("dash-title")
         val = QLabel(value)
         val.setObjectName("dash-value")
-        val.setProperty("role", "value")
         v.addWidget(t)
         v.addWidget(val)
         return frame
@@ -163,6 +152,7 @@ class DashboardPage(QWidget):
             low = len(self.inventory.get_low_stock_items())
             self._set_card_value(self.low_stock_card, str(low))
         except Exception:
+            logger.warning("Dashboard: failed to load low-stock count", exc_info=True)
             self._set_card_value(self.low_stock_card, "—")
 
         try:
@@ -170,13 +160,15 @@ class DashboardPage(QWidget):
             active = sum(1 for i in items if i.is_active)
             self._set_card_value(self.items_card, str(active))
         except Exception:
+            logger.warning("Dashboard: failed to load item count", exc_info=True)
             self._set_card_value(self.items_card, "—")
 
         try:
             total_rial = self.accounting.today_sales_total_rial()
-            toman = logic.rial_to_toman(total_rial)
+            toman = rial_to_toman(total_rial)
             self._set_card_value(self.sales_card, f"{toman:,} تومان")
         except Exception:
+            logger.warning("Dashboard: failed to load today sales", exc_info=True)
             self._set_card_value(self.sales_card, "—")
 
 
@@ -257,11 +249,7 @@ class MainWindow(QMainWindow):
 
     def _highlight_nav(self, active_index: int):
         for i, btn in enumerate(self._nav_buttons):
-            if i == active_index:
-                btn.setObjectName("nav-active")
-            else:
-                btn.setObjectName("")
-            # Force style re-polish after objectName change
+            btn.setObjectName("nav-active" if i == active_index else "")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
             btn.update()
@@ -285,32 +273,36 @@ class MainWindow(QMainWindow):
         )
         self.content_stack.addWidget(self.accounting_page)
 
-        reports = QWidget()
-        r_layout = QVBoxLayout(reports)
-        r_layout.addWidget(make_page_title("📊 گزارش‌ها"))
-        r_layout.addWidget(QLabel("فاز ۲ — در حال توسعه..."))
-        r_layout.addStretch()
-        self.content_stack.addWidget(reports)
-
-        social = QWidget()
-        s_layout = QVBoxLayout(social)
-        s_layout.addWidget(make_page_title("💬 شبکه‌های اجتماعی"))
-        s_layout.addWidget(QLabel("در حال توسعه..."))
-        s_layout.addStretch()
-        self.content_stack.addWidget(social)
-
-        settings = QWidget()
-        st_layout = QVBoxLayout(settings)
-        st_layout.addWidget(make_page_title("⚙️ پیکربندی"))
-        st_layout.addWidget(QLabel("در حال توسعه..."))
-        st_layout.addStretch()
-        self.content_stack.addWidget(settings)
+        for title_text, body in (
+            ("📊 گزارش‌ها", "فاز ۲ — در حال توسعه..."),
+            ("💬 شبکه‌های اجتماعی", "در حال توسعه..."),
+            ("⚙️ پیکربندی", "در حال توسعه..."),
+        ):
+            page = QWidget()
+            lay = QVBoxLayout(page)
+            lay.addWidget(make_page_title(title_text))
+            lay.addWidget(QLabel(body))
+            lay.addStretch()
+            self.content_stack.addWidget(page)
 
     def switch_to_module(self, index):
+        """Refresh the target page on every navigation so cross-app writes
+        (e.g. Accounting purchase → Inventory on-hand) are visible without
+        restarting the app.
+
+        Later (Reports Manager): prefer an in-process signal on
+        InventoryService.record_movement that open widgets can subscribe to —
+        same staleness class of bug. See this method when implementing Reports.
+        """
         self.content_stack.setCurrentIndex(index)
         self._highlight_nav(index)
-        if index == 0:
-            self.dashboard.refresh()
+        page = self.content_stack.widget(index)
+        if page is None:
+            return
+        if hasattr(page, "refresh") and callable(page.refresh):
+            page.refresh()
+        elif hasattr(page, "reload") and callable(page.reload):
+            page.reload()
 
 
 if __name__ == "__main__":

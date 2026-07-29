@@ -47,9 +47,11 @@ claim about current code.
   bare adjectives.
 - Foreign keys: `<referenced_singular>_id` implicit via Peewee
   `ForeignKeyField`, named after the singular entity (`item`, not `item_ref`).
-- Timestamps: `created_at`, `updated_at` on every table that supports
-  editing; `StockMovement` additionally has `occurred_at` (business time) —
-  don't conflate the two.
+- Timestamps: ledger / transaction tables use `timestamp` (naive UTC,
+  business event time). Editable master data (Contact, Item, Warehouse) does
+  **not** carry `created_at`/`updated_at` in MVS; add them in a later migration
+  if audit of master-data edits is required. Prefer not inventing parallel
+  names (`occurred_at`) until a migration introduces them.
 
 ### UI-facing strings
 - Farsi UI text stays inline as string literals for MVS (matches current
@@ -123,12 +125,22 @@ architecture.
 
 ## 3. Error Handling
 
-**Status: 🔜 planned.** `src/core/errors.py` does not exist yet. This section
-describes the pattern to introduce the next time a service-layer change needs
+This section describes the pattern to introduce the next time a service-layer change needs
 to raise a domain error — not a claim that this hierarchy is already in use.
 Until it lands, keep translating `IntegrityError` etc. into plain exceptions
 carrying a Farsi message string, and migrate to the hierarchy below in the
 same change that first needs a second exception subclass.
+
+**Status:`src/core/errors.py` exists.** Hierarchy:
+
+- `ShopAppsError` (base, `.message_fa`)
+- `InventoryError` / alias `InventoryServiceError`
+- `InsufficientStockError`
+- `ContactError` / `ContactInUseError` / alias `ContactServiceError`
+- `AccountingError` / alias `AccountingServiceError`. 
+
+UI should display `exc.message_fa` (or `getattr(exc, "message_fa", str(exc))`
+during migration). Never show raw tracebacks.
 
 ### Exception hierarchy
 Add `src/core/errors.py`:
