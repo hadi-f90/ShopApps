@@ -38,7 +38,7 @@ ALLOWED_PROPERTIES = frozenset(
 )
 
 MAX_VCF_BYTES = 2 * 1024 * 1024  # 2 MiB
-MAX_CARDS_PER_IMPORT = 500
+MAX_CARDS_PER_IMPORT = 2000
 
 _QP_HEX = re.compile(r"=[0-9A-Fa-f]{2}")
 _PROP_START = re.compile(r"^[A-Za-z0-9._-]+[;:]")

@@ -10,10 +10,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Protocol, Union
+from typing import List, Optional, Protocol, Sequence, Union
 
 from peewee import DoesNotExist
 
+from src.apps.contacts.duplicate_logic import (
+    DEFAULT_NAME_THRESHOLD,
+    cluster_duplicates,
+    match_against_index,
+    normalize_email as _norm_email,
+    normalize_name as _norm_name,
+    normalize_phone as _dup_norm_phone,
+    phone_match_keys,
+)
 from src.apps.contacts.vcf import (
     MAX_VCF_BYTES,
     VCardData,
@@ -21,8 +30,13 @@ from src.apps.contacts.vcf import (
     cards_to_vcf,
     parse_vcf_text,
 )
-from src.core.db.models import Contact, Item, Purchase, Receipt
+from src.core.db.models import Contact, Item, Purchase, Receipt, db
 from src.core.errors import ContactError, ContactInUseError, ContactServiceError
+
+# Duplicate policy for selective import
+DUP_SKIP = "skip"
+DUP_MERGE = "merge"
+DUP_CREATE = "create"
 
 
 def normalize_phone(value: str | None) -> str:
@@ -57,9 +71,22 @@ class ContactDTO:
 
 @dataclass(frozen=True)
 class VcfImportReport:
-    created: int
-    skipped: int
+    created: int = 0
+    merged: int = 0
+    skipped: int = 0
     errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class VcfPreviewRow:
+    """One parsed card plus optional match against an existing contact."""
+
+    index: int
+    card: VCardData
+    match_id: Optional[int] = None
+    match_name: str = ""
+    match_reason: str = ""  # mobile | phone | email | name_fuzzy
+    match_score: float = 0.0
 
 
 class ContactService(Protocol):
@@ -91,6 +118,21 @@ class ContactService(Protocol):
 
     def delete_contact(self, contact_id: int) -> None: ...
 
+    def read_vcf_source(self, source: Union[str, Path, bytes]) -> str: ...
+
+    def preview_vcf(
+        self, source: Union[str, Path, bytes]
+    ) -> tuple[list[VcfPreviewRow], tuple[str, ...]]: ...
+
+    def import_vcf_cards(
+        self,
+        cards: Sequence[VCardData],
+        *,
+        duplicate_policy: str = DUP_SKIP,
+        default_is_customer: bool = True,
+        default_is_vendor: bool = False,
+    ) -> VcfImportReport: ...
+
     def import_vcf(
         self,
         source: Union[str, Path, bytes],
@@ -98,6 +140,22 @@ class ContactService(Protocol):
         default_is_customer: bool = True,
         default_is_vendor: bool = False,
     ) -> VcfImportReport: ...
+
+
+    def find_duplicate_groups(
+        self, *, name_threshold: float = DEFAULT_NAME_THRESHOLD
+    ) -> list[list[ContactDTO]]:
+        """Groups of existing contacts that look like duplicates (exact or fuzzy name)."""
+        contacts = self.list_contacts()
+        return cluster_duplicates(
+            contacts,
+            get_id=lambda c: c.id or 0,
+            get_mobile=lambda c: c.mobile,
+            get_phone=lambda c: c.phone,
+            get_email=lambda c: c.email,
+            get_name=lambda c: c.name,
+            name_threshold=name_threshold,
+        )
 
     def export_vcf(self, contact_ids: Optional[List[int]] = None) -> str: ...
 
@@ -248,20 +306,21 @@ class LocalContactService:
 
         Contact.get_by_id(contact_id).delete_instance()
 
-    def import_vcf(
-        self,
-        source: Union[str, Path, bytes],
-        *,
-        default_is_customer: bool = True,
-        default_is_vendor: bool = False,
-    ) -> VcfImportReport:
-        """Import contacts from a .vcf path, raw bytes, or text string.
+    # ----- VCF -----
 
-        Security: size limit, text decode only, allowlisted properties in parser.
-        Does not deduplicate (MVS). Defaults roles to customer unless specified.
-        """
-        if isinstance(source, (str, Path)) and not isinstance(source, bytes):
+    def read_vcf_source(self, source: Union[str, Path, bytes]) -> str:
+        """Load VCF bytes/path/text with size limit; return decoded text."""
+        if isinstance(source, bytes):
+            if len(source) > MAX_VCF_BYTES:
+                raise ContactServiceError(
+                    f"حجم داده از سقف {MAX_VCF_BYTES // (1024 * 1024)} مگابایت بیشتر است"
+                )
+            raw = source
+        elif isinstance(source, (str, Path)):
             path = Path(source)
+            # plain VCF text passed as str (no path) — rare
+            if not path.is_file() and isinstance(source, str) and "BEGIN:VCARD" in source.upper():
+                return source
             if not path.is_file():
                 raise ContactServiceError("فایل VCF یافت نشد")
             size = path.stat().st_size
@@ -270,55 +329,217 @@ class LocalContactService:
                     f"حجم فایل از سقف {MAX_VCF_BYTES // (1024 * 1024)} مگابایت بیشتر است"
                 )
             raw = path.read_bytes()
-        elif isinstance(source, bytes):
-            if len(source) > MAX_VCF_BYTES:
-                raise ContactServiceError(
-                    f"حجم داده از سقف {MAX_VCF_BYTES // (1024 * 1024)} مگابایت بیشتر است"
-                )
-            raw = source
         else:
             raw = str(source).encode("utf-8")
 
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
+        for enc in ("utf-8-sig", "utf-8", "cp1256", "latin-1"):
             try:
-                text = raw.decode("utf-8-sig")
+                return raw.decode(enc)
             except UnicodeDecodeError:
-                text = raw.decode("latin-1")
+                continue
+        return raw.decode("latin-1", errors="replace")
 
+    def _build_dup_index(self):
+        """Indexes for exact fields + name list for fuzzy match."""
+        by_mobile: dict[str, ContactDTO] = {}
+        by_phone: dict[str, ContactDTO] = {}
+        by_email: dict[str, ContactDTO] = {}
+        by_id: dict[int, ContactDTO] = {}
+        name_entries: list[tuple[str, str]] = []  # (name, id_str)
+        for c in self.list_contacts():
+            by_id[c.id] = c
+            for key in phone_match_keys(c.mobile):
+                by_mobile.setdefault(key, c)
+            for key in phone_match_keys(c.phone):
+                by_phone.setdefault(key, c)
+            em = _norm_email(c.email)
+            if em and em not in by_email:
+                by_email[em] = c
+            if c.name:
+                name_entries.append((c.name, str(c.id)))
+        return by_mobile, by_phone, by_email, by_id, name_entries
+
+    def _match_card(
+        self,
+        card: VCardData,
+        by_mobile: dict,
+        by_phone: dict,
+        by_email: dict,
+        by_id: dict,
+        name_entries: list,
+        *,
+        name_threshold: float = DEFAULT_NAME_THRESHOLD,
+    ) -> tuple[Optional[ContactDTO], str, float]:
+        mr = match_against_index(
+            mobile=card.mobile,
+            phone=card.phone,
+            email=card.email,
+            name=card.name,
+            by_mobile={k: str(v.id) for k, v in by_mobile.items()},
+            by_phone={k: str(v.id) for k, v in by_phone.items()},
+            by_email={k: str(v.id) for k, v in by_email.items()},
+            name_entries=name_entries,
+            name_threshold=name_threshold,
+        )
+        if not mr:
+            return None, "", 0.0
+        dto = by_id.get(int(mr.key))
+        return dto, mr.reason, mr.score
+
+    def preview_vcf(
+        self, source: Union[str, Path, bytes]
+    ) -> tuple[list[VcfPreviewRow], tuple[str, ...]]:
+        text = self.read_vcf_source(source)
         parsed: VcfParseResult = parse_vcf_text(text)
         if parsed.errors and not parsed.cards:
             raise ContactServiceError("؛ ".join(parsed.errors))
 
-        created = 0
-        for card in parsed.cards:
-            try:
-                self.create_contact(
-                    name=card.name,
-                    phone=card.phone,
-                    mobile=card.mobile,
-                    email=card.email,
-                    organization=card.organization,
-                    title=card.title,
-                    address=card.address,
-                    tags=card.tags,
-                    note=card.note,
-                    is_customer=default_is_customer,
-                    is_vendor=default_is_vendor,
+        by_mobile, by_phone, by_email, by_id, name_entries = self._build_dup_index()
+        rows: list[VcfPreviewRow] = []
+        for i, card in enumerate(parsed.cards):
+            match, reason, score = self._match_card(
+                card, by_mobile, by_phone, by_email, by_id, name_entries
+            )
+            rows.append(
+                VcfPreviewRow(
+                    index=i,
+                    card=card,
+                    match_id=match.id if match else None,
+                    match_name=match.name if match else "",
+                    match_reason=reason,
+                    match_score=score,
                 )
-                created += 1
-            except ContactServiceError:
-                parsed.skipped += 1
+            )
+        return rows, tuple(parsed.errors)
+
+    def _merge_into(self, contact_id: int, card: VCardData) -> ContactDTO:
+        """Fill empty fields on existing contact from VCF card; keep existing when both set."""
+        existing = self.get_contact(contact_id)
+        fields: dict = {}
+        # Prefer existing non-empty; only overwrite empties
+        if not (existing.phone or "").strip() and card.phone:
+            fields["phone"] = card.phone
+        if not (existing.mobile or "").strip() and card.mobile:
+            fields["mobile"] = card.mobile
+        if not (existing.email or "").strip() and card.email:
+            fields["email"] = card.email
+        if not (existing.organization or "").strip() and card.organization:
+            fields["organization"] = card.organization
+        if not (existing.title or "").strip() and card.title:
+            fields["title"] = card.title
+        if not (existing.address or "").strip() and card.address:
+            fields["address"] = card.address
+        if not (existing.tags or "").strip() and card.tags:
+            fields["tags"] = card.tags
+        elif card.tags and existing.tags and card.tags not in existing.tags:
+            fields["tags"] = f"{existing.tags}, {card.tags}"
+        if not (existing.note or "").strip() and card.note:
+            fields["note"] = card.note
+        if not fields:
+            return existing
+        return self.update_contact(contact_id, **fields)
+
+    def import_vcf_cards(
+        self,
+        cards: Sequence[VCardData],
+        *,
+        duplicate_policy: str = DUP_SKIP,
+        default_is_customer: bool = True,
+        default_is_vendor: bool = False,
+    ) -> VcfImportReport:
+        """Import already-parsed cards with duplicate policy. Uses one DB transaction."""
+        if duplicate_policy not in (DUP_SKIP, DUP_MERGE, DUP_CREATE):
+            duplicate_policy = DUP_SKIP
+
+        by_mobile, by_phone, by_email, by_id, name_entries = self._build_dup_index()
+        created = merged = skipped = 0
+        errors: list[str] = []
+
+        with db.atomic():
+            for card in cards:
+                if not (card.name or "").strip():
+                    skipped += 1
+                    continue
+                match, _reason, _score = self._match_card(
+                    card, by_mobile, by_phone, by_email, by_id, name_entries
+                )
+                try:
+                    if match is None or duplicate_policy == DUP_CREATE:
+                        dto = self.create_contact(
+                            name=card.name,
+                            phone=card.phone,
+                            mobile=card.mobile,
+                            email=card.email,
+                            organization=card.organization,
+                            title=card.title,
+                            address=card.address,
+                            tags=card.tags,
+                            note=card.note,
+                            is_customer=default_is_customer,
+                            is_vendor=default_is_vendor,
+                        )
+                        created += 1
+                        # keep index fresh within batch
+                        for key in phone_match_keys(dto.mobile):
+                            by_mobile[key] = dto
+                        for key in phone_match_keys(dto.phone):
+                            by_phone[key] = dto
+                        em = (dto.email or "").strip().lower()
+                        if em:
+                            by_email[em] = dto
+                    elif duplicate_policy == DUP_SKIP:
+                        skipped += 1
+                    else:  # MERGE
+                        self._merge_into(match.id, card)
+                        merged += 1
+                except ContactServiceError as exc:
+                    skipped += 1
+                    errors.append(getattr(exc, "message_fa", None) or str(exc))
 
         return VcfImportReport(
             created=created,
-            skipped=parsed.skipped,
-            errors=tuple(parsed.errors),
+            merged=merged,
+            skipped=skipped,
+            errors=tuple(errors[:20]),
+        )
+
+    def import_vcf(
+        self,
+        source: Union[str, Path, bytes],
+        *,
+        default_is_customer: bool = True,
+        default_is_vendor: bool = False,
+        duplicate_policy: str = DUP_SKIP,
+    ) -> VcfImportReport:
+        """Parse whole file and import all cards (no UI selection). Prefer preview + import_vcf_cards."""
+        text = self.read_vcf_source(source)
+        parsed = parse_vcf_text(text)
+        if parsed.errors and not parsed.cards:
+            raise ContactServiceError("؛ ".join(parsed.errors))
+        return self.import_vcf_cards(
+            parsed.cards,
+            duplicate_policy=duplicate_policy,
+            default_is_customer=default_is_customer,
+            default_is_vendor=default_is_vendor,
+        )
+
+
+    def find_duplicate_groups(
+        self, *, name_threshold: float = DEFAULT_NAME_THRESHOLD
+    ) -> list[list[ContactDTO]]:
+        """Groups of existing contacts that look like duplicates (exact or fuzzy name)."""
+        contacts = self.list_contacts()
+        return cluster_duplicates(
+            contacts,
+            get_id=lambda c: c.id or 0,
+            get_mobile=lambda c: c.mobile,
+            get_phone=lambda c: c.phone,
+            get_email=lambda c: c.email,
+            get_name=lambda c: c.name,
+            name_threshold=name_threshold,
         )
 
     def export_vcf(self, contact_ids: Optional[List[int]] = None) -> str:
-        """Export contacts as VCF 3.0 text. None = all contacts."""
         if contact_ids is not None:
             contacts = []
             for cid in contact_ids:

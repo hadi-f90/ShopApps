@@ -19,10 +19,8 @@ def service():
 
 
 def _make_vendor_contact(name="فروشنده تست", mobile="09120000000"):
-    # is_customer/is_vendor flags (contact_type removed — see contacts-mvs-spec)
-    return Contact.create(
-        name=name, mobile=mobile, is_customer=False, is_vendor=True
-    )
+
+    return Contact.create(name=name, mobile=mobile, is_customer=False, is_vendor=True)
 
 
 def test_create_and_list_item(service):
@@ -147,7 +145,6 @@ def test_contact_service_lists_only_vendors():
 
     vendors = LocalContactService().list_vendors()
     assert [v.id for v in vendors] == [vendor.id]
-
 
 def test_contact_service_search_filters_by_name():
     _make_vendor_contact(name="کاغذ سازان ایران")
