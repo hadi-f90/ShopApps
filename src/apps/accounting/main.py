@@ -7,7 +7,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
-    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
@@ -24,7 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.apps.inventory import inventory_logic as logic
+from src.apps.accounting import accounting_logic as alogic
+from src.core.currency import rial_to_toman
 from src.core.services.accounting_service import (
     AccountingService,
     AccountingServiceError,
@@ -33,22 +33,16 @@ from src.core.services.accounting_service import (
 )
 from src.core.services.contact_service import ContactService, LocalContactService
 from src.core.services.inventory_service import InventoryService, LocalInventoryService
-from src.core.utils.jalali import gregorian_to_jalali_display
-
-MAX_RIAL = 999_999_999_999
-
-
-def _rial_spin() -> QDoubleSpinBox:
-    box = QDoubleSpinBox()
-    box.setDecimals(0)
-    box.setRange(0, MAX_RIAL)
-    box.setSuffix(" ریال")
-    box.setGroupSeparatorShown(True)
-    return box
+from src.core.utils.jalali import gregorian_to_jalali_display, jalali_str_to_gregorian
+from src.shared_ui.desktop.widgets.rial_spinbox import make_rial_spinbox
 
 
 def _toman_label(rial: int) -> str:
-    return f"{logic.rial_to_toman(rial):,} تومان"
+    return f"{rial_to_toman(rial):,} تومان"
+
+
+def _err_text(exc: Exception) -> str:
+    return getattr(exc, "message_fa", None) or str(exc)
 
 
 class ReceiptForm(QDialog):
@@ -63,10 +57,10 @@ class ReceiptForm(QDialog):
         self.accounting = accounting
         self.inventory = inventory
         self.contacts = contacts
-        self._lines: List[dict] = []  # {item_id, name, qty, unit_price}
+        self._lines: List[dict] = []
 
         self.setWindowTitle("فاکتور فروش جدید")
-        self.setMinimumWidth(640)
+        self.setMinimumWidth(720)
 
         layout = QVBoxLayout(self)
 
@@ -87,13 +81,17 @@ class ReceiptForm(QDialog):
         form.addRow("انبار *:", self.warehouse_combo)
         layout.addLayout(form)
 
-        # Line entry row
         line_row = QHBoxLayout()
         self.item_combo = QComboBox()
         for it in self.inventory.list_items():
-            self.item_combo.addItem(
-                f"{it.name} — {_toman_label(it.sale_price)}", it.id
+            # Show BOTH units, clearly labeled — spin box is Rial-only.
+            # Avoid Toman-only in the combo next to a Rial spin (10x risk).
+            label = (
+                f"{it.name} — "
+                f"{it.sale_price:,} ریال "
+                f"({_toman_label(it.sale_price)})"
             )
+            self.item_combo.addItem(label, it.id)
             self.item_combo.setItemData(
                 self.item_combo.count() - 1, it.sale_price, Qt.UserRole + 1
             )
@@ -102,7 +100,7 @@ class ReceiptForm(QDialog):
         self.qty_spin.setRange(1, 1_000_000)
         self.qty_spin.setValue(1)
 
-        self.price_spin = _rial_spin()
+        self.price_spin = make_rial_spinbox()
         self.item_combo.currentIndexChanged.connect(self._sync_price)
 
         add_line_btn = QPushButton("افزودن قلم")
@@ -112,18 +110,22 @@ class ReceiptForm(QDialog):
         line_row.addWidget(self.item_combo, 2)
         line_row.addWidget(QLabel("تعداد:"))
         line_row.addWidget(self.qty_spin)
-        line_row.addWidget(QLabel("قیمت واحد:"))
+        line_row.addWidget(QLabel("قیمت واحد (ریال):"))
         line_row.addWidget(self.price_spin)
         line_row.addWidget(add_line_btn)
         layout.addLayout(line_row)
+
+        hint = QLabel(
+            "قیمت قابل ویرایش است (تخفیف موردی). واحد ورودی و ذخیره همیشه ریال است."
+        )
+        hint.setStyleSheet("color: #666; font-size: 12px;")
+        layout.addWidget(hint)
 
         self.lines_table = QTableWidget(0, 5)
         self.lines_table.setHorizontalHeaderLabels(
             ["کالا", "تعداد", "قیمت واحد (ریال)", "جمع (ریال)", ""]
         )
-        self.lines_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.Stretch
-        )
+        self.lines_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         layout.addWidget(self.lines_table)
 
         self.total_label = QLabel("جمع کل: ۰ ریال (۰ تومان)")
@@ -167,10 +169,17 @@ class ReceiptForm(QDialog):
 
     def _refresh_lines_table(self):
         self.lines_table.setRowCount(0)
-        total = 0
+        pure = [
+            alogic.LineInput(
+                item_id=ln["item_id"],
+                quantity=ln["qty"],
+                unit_price_rial=ln["unit_price"],
+            )
+            for ln in self._lines
+        ]
+        total = alogic.receipt_total_rial(pure) if pure else 0
         for i, ln in enumerate(self._lines):
-            line_total = ln["qty"] * ln["unit_price"]
-            total += line_total
+            line_total = alogic.line_total_rial(ln["qty"], ln["unit_price"])
             self.lines_table.insertRow(i)
             self.lines_table.setItem(i, 0, QTableWidgetItem(ln["name"]))
             self.lines_table.setItem(i, 1, QTableWidgetItem(str(ln["qty"])))
@@ -213,7 +222,7 @@ class ReceiptForm(QDialog):
                 note=self.note_edit.toPlainText(),
             )
         except AccountingServiceError as exc:
-            QMessageBox.warning(self, "خطا", str(exc))
+            QMessageBox.warning(self, "خطا", _err_text(exc))
             return
         QMessageBox.information(self, "موفق", "فاکتور ثبت شد و موجودی به‌روز شد")
         self.accept()
@@ -246,7 +255,9 @@ class PurchaseForm(QDialog):
 
         self.item_combo = QComboBox()
         for it in self.inventory.list_items():
-            self.item_combo.addItem(it.name, it.id)
+            self.item_combo.addItem(
+                f"{it.name} — {it.purchase_price:,} ریال", it.id
+            )
             self.item_combo.setItemData(
                 self.item_combo.count() - 1, it.purchase_price, Qt.UserRole + 1
             )
@@ -259,7 +270,7 @@ class PurchaseForm(QDialog):
         self.qty_spin.setRange(1, 1_000_000)
         self.qty_spin.setValue(1)
 
-        self.cost_spin = _rial_spin()
+        self.cost_spin = make_rial_spinbox()
         self.item_combo.currentIndexChanged.connect(self._sync_cost)
 
         self.note_edit = QTextEdit()
@@ -269,7 +280,7 @@ class PurchaseForm(QDialog):
         layout.addRow("کالا *:", self.item_combo)
         layout.addRow("انبار *:", self.warehouse_combo)
         layout.addRow("تعداد *:", self.qty_spin)
-        layout.addRow("بهای واحد *:", self.cost_spin)
+        layout.addRow("بهای واحد (ریال) *:", self.cost_spin)
         layout.addRow("یادداشت:", self.note_edit)
 
         btn_row = QHBoxLayout()
@@ -305,7 +316,7 @@ class PurchaseForm(QDialog):
                 note=self.note_edit.toPlainText(),
             )
         except AccountingServiceError as exc:
-            QMessageBox.warning(self, "خطا", str(exc))
+            QMessageBox.warning(self, "خطا", _err_text(exc))
             return
         QMessageBox.information(self, "موفق", "خرید ثبت شد و موجودی افزایش یافت")
         self.accept()
@@ -325,9 +336,13 @@ class AccountingManager(QWidget):
         self.contacts = contacts or LocalContactService()
 
         layout = QVBoxLayout(self)
+        title = QLabel("🧾 حسابداری")
+        title.setObjectName("page-title")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #2c3e50;")
+        layout.addWidget(title)
+
         self.tabs = QTabWidget()
 
-        # --- Receipts tab ---
         receipts_page = QWidget()
         r_layout = QVBoxLayout(receipts_page)
         r_toolbar = QHBoxLayout()
@@ -335,12 +350,26 @@ class AccountingManager(QWidget):
         self.refresh_receipts_btn = QPushButton("↻ بروزرسانی")
         self.receipt_search = QLineEdit()
         self.receipt_search.setPlaceholderText("جستجو در مشتری / شماره / یادداشت...")
+        self.date_from_edit = QLineEdit()
+        self.date_from_edit.setPlaceholderText("از تاریخ جلالی YYYY/MM/DD")
+        self.date_from_edit.setMaximumWidth(160)
+        self.date_to_edit = QLineEdit()
+        self.date_to_edit.setPlaceholderText("تا تاریخ جلالی YYYY/MM/DD")
+        self.date_to_edit.setMaximumWidth(160)
+
         self.new_receipt_btn.clicked.connect(self.open_receipt_form)
         self.refresh_receipts_btn.clicked.connect(self.reload_receipts)
         self.receipt_search.textChanged.connect(self.reload_receipts)
+        self.date_from_edit.editingFinished.connect(self.reload_receipts)
+        self.date_to_edit.editingFinished.connect(self.reload_receipts)
+
         r_toolbar.addWidget(self.new_receipt_btn)
         r_toolbar.addWidget(self.refresh_receipts_btn)
         r_toolbar.addWidget(self.receipt_search)
+        r_toolbar.addWidget(QLabel("از:"))
+        r_toolbar.addWidget(self.date_from_edit)
+        r_toolbar.addWidget(QLabel("تا:"))
+        r_toolbar.addWidget(self.date_to_edit)
         r_layout.addLayout(r_toolbar)
 
         self.receipts_table = QTableWidget(0, 5)
@@ -351,7 +380,6 @@ class AccountingManager(QWidget):
         r_layout.addWidget(self.receipts_table)
         self.tabs.addTab(receipts_page, "فاکتورها")
 
-        # --- Purchases tab ---
         purchases_page = QWidget()
         p_layout = QVBoxLayout(purchases_page)
         p_toolbar = QHBoxLayout()
@@ -376,23 +404,41 @@ class AccountingManager(QWidget):
         self.reload_receipts()
         self.reload_purchases()
 
+    def refresh(self):
+        """Called from MainWindow.switch_to_module."""
+        self.reload_receipts()
+        self.reload_purchases()
+
     def open_receipt_form(self):
-        dialog = ReceiptForm(
-            self.accounting, self.inventory, self.contacts, self
-        )
+        dialog = ReceiptForm(self.accounting, self.inventory, self.contacts, self)
         if dialog.exec():
             self.reload_receipts()
 
     def open_purchase_form(self):
-        dialog = PurchaseForm(
-            self.accounting, self.inventory, self.contacts, self
-        )
+        dialog = PurchaseForm(self.accounting, self.inventory, self.contacts, self)
         if dialog.exec():
             self.reload_purchases()
 
+    def _parse_jalali_optional(self, widget: QLineEdit) -> Optional[date]:
+        text = widget.text().strip()
+        if not text:
+            return None
+        try:
+            return jalali_str_to_gregorian(text)
+        except Exception:
+            QMessageBox.warning(
+                self, "خطا", f"تاریخ نامعتبر: {text}\nفرمت: YYYY/MM/DD جلالی"
+            )
+            return None
+
     def reload_receipts(self):
         search = self.receipt_search.text() if hasattr(self, "receipt_search") else ""
-        rows = self.accounting.list_receipts(search=search)
+        date_from = self._parse_jalali_optional(self.date_from_edit) if hasattr(self, "date_from_edit") else None
+        date_to = self._parse_jalali_optional(self.date_to_edit) if hasattr(self, "date_to_edit") else None
+        # If parse failed and text non-empty, still show unfiltered to avoid empty UI
+        rows = self.accounting.list_receipts(
+            search=search, date_from=date_from, date_to=date_to
+        )
         self.receipts_table.setRowCount(0)
         for i, r in enumerate(rows):
             self.receipts_table.insertRow(i)
@@ -404,7 +450,7 @@ class AccountingManager(QWidget):
             self.receipts_table.setItem(i, 2, QTableWidgetItem(r.contact_name or "—"))
             self.receipts_table.setItem(i, 3, QTableWidgetItem(f"{r.total_rial:,}"))
             self.receipts_table.setItem(
-                i, 4, QTableWidgetItem(f"{logic.rial_to_toman(r.total_rial):,}")
+                i, 4, QTableWidgetItem(f"{rial_to_toman(r.total_rial):,}")
             )
 
     def reload_purchases(self):

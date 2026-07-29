@@ -22,7 +22,8 @@ equipment sales and record basic financial transactions.
    - Acceptance criteria:
      - [ ] List view of receipts with date (Jalali display, Gregorian
        storage), customer, total
-     - [ ] Basic search/filter by date or customer
+     - [x] Basic search/filter by date or customer — UI exposes Jalali date-from /
+  date-to fields wired to `AccountingService.list_receipts(date_from=, date_to=)`.
      - [ ] Receipts are identified by their database id for MVS; no formal
        sequential invoice-numbering scheme yet (see Out of Scope)
 
@@ -52,6 +53,10 @@ equipment sales and record basic financial transactions.
   end-to-end sale flow (contact → item sale → receipt → stock update); PDF
   generation adds an RTL-PDF-text-shaping problem that isn't required to
   prove that loop and can be added once the core flow is solid
+- Plain Edit/Delete of receipts or purchases is **out of scope**. Ledger rows
+  are append-only. Future **void/cancel** (status flag + reversing
+  StockMovement) is Phase 2 / separate spec — see
+  `receipt-purchase-void-spec.md` draft.
 
 ## Assumptions
 - Uses data from Inventory and Contacts modules via `core/services`
@@ -61,6 +66,10 @@ equipment sales and record basic financial transactions.
 - Non-sale stock decreases (internal consumption, spoilage) are recorded from
   the Inventory app directly, not from Accounting — Accounting only produces
   `sale` and `purchase` movements
+- **Unit price on a receipt line may differ from the catalog `Item.sale_price`.**
+  The form pre-fills from catalog price; the cashier may override for a
+  one-off discount. Stored value is always the line's `unit_price_rial`.
+  This is intentional for MVS (simple discounts without a pricing engine).
 
 ## Open Questions
 - Should receipt support multiple payment types in MVS? — Deferred; cash only

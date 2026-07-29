@@ -31,16 +31,19 @@ class ItemsTab(QWidget):
         toolbar = QHBoxLayout()
         self.add_btn = QPushButton("➕ افزودن کالا")
         self.edit_btn = QPushButton("✏️ ویرایش")
+        self.adjust_btn = QPushButton("⚖️ تنظیم موجودی")
         self.movement_btn = QPushButton("🔄 ثبت تراکنش موجودی")
         self.refresh_btn = QPushButton("↻ بروزرسانی")
 
         self.add_btn.clicked.connect(self.add_item)
         self.edit_btn.clicked.connect(self.edit_item)
+        self.adjust_btn.clicked.connect(self.adjust_stock)
         self.movement_btn.clicked.connect(self.open_movement_form)
         self.refresh_btn.clicked.connect(self.reload)
 
         toolbar.addWidget(self.add_btn)
         toolbar.addWidget(self.edit_btn)
+        toolbar.addWidget(self.adjust_btn)
         toolbar.addWidget(self.movement_btn)
         toolbar.addWidget(self.refresh_btn)
         toolbar.addStretch()
@@ -77,6 +80,16 @@ class ItemsTab(QWidget):
             QMessageBox.warning(self, "خطا", "یک کالا انتخاب کنید")
             return
         dialog = ItemForm(self.service, self, item)
+        if dialog.exec():
+            self.reload()
+
+    def adjust_stock(self):
+        """Open StockMovementForm pre-filled for the selected item (separate from Edit)."""
+        item = self._selected_item()
+        if not item:
+            QMessageBox.warning(self, "خطا", "یک کالا انتخاب کنید")
+            return
+        dialog = StockMovementForm(self.service, self, prefill_item_id=item.id)
         if dialog.exec():
             self.reload()
 
@@ -120,8 +133,6 @@ class WarehousesTab(QWidget):
 
 
 class InventoryManager(QWidget):
-    """Top-level Inventory sub-app widget."""
-
     def __init__(self, service: InventoryService = None, parent=None):
         super().__init__(parent)
         self.service = service or LocalInventoryService()
@@ -138,3 +149,8 @@ class InventoryManager(QWidget):
         self.tabs.addTab(self.items_tab, "کالاها")
         self.tabs.addTab(self.warehouses_tab, "انبارها")
         layout.addWidget(self.tabs)
+
+    def refresh(self):
+        """Called from MainWindow.switch_to_module after cross-app writes."""
+        self.items_tab.reload()
+        self.warehouses_tab.reload()

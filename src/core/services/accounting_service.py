@@ -3,14 +3,12 @@ Backend service layer for Accounting & Receipts (MVS).
 
 Creates receipts that drive sale stock movements, and purchases that
 drive purchase stock movements, exclusively through InventoryService.
-Display names are resolved via InventoryService / ContactService — not
-by importing sibling domain models for lookups (Backend API agent rule).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime
 from typing import List, Optional, Protocol
 
 from peewee import DoesNotExist
@@ -24,6 +22,7 @@ from src.core.services.inventory_service import (
     InventoryServiceError,
     LocalInventoryService,
 )
+from src.core.timezone import iran_day_bounds_as_naive_utc, today_bounds_naive_utc
 
 
 @dataclass(frozen=True)
@@ -234,7 +233,8 @@ class LocalAccountingService:
                         note=note or "",
                     )
         except InventoryServiceError as exc:
-            raise AccountingServiceError(str(exc), cause=exc)
+            msg = getattr(exc, "message_fa", None) or str(exc)
+            raise AccountingServiceError(msg, cause=exc)
         except AccountingError:
             raise
         except Exception as exc:
@@ -249,14 +249,13 @@ class LocalAccountingService:
         date_to: Optional[date] = None,
     ) -> List[ReceiptDTO]:
         query = Receipt.select().order_by(Receipt.timestamp.desc())
+        # date_from/date_to are Iran calendar days; convert to naive-UTC bounds
         if date_from is not None:
-            query = query.where(
-                Receipt.timestamp >= datetime.combine(date_from, time.min)
-            )
+            start_utc, _ = iran_day_bounds_as_naive_utc(date_from)
+            query = query.where(Receipt.timestamp >= start_utc)
         if date_to is not None:
-            query = query.where(
-                Receipt.timestamp <= datetime.combine(date_to, time.max)
-            )
+            _, end_utc = iran_day_bounds_as_naive_utc(date_to)
+            query = query.where(Receipt.timestamp <= end_utc)
         results = [self._to_receipt_dto(r, include_lines=False) for r in query]
         if search:
             s = search.strip().lower()
@@ -320,7 +319,8 @@ class LocalAccountingService:
                     note=note or "",
                 )
         except InventoryServiceError as exc:
-            raise AccountingServiceError(str(exc), cause=exc)
+            msg = getattr(exc, "message_fa", None) or str(exc)
+            raise AccountingServiceError(msg, cause=exc)
         except Exception as exc:
             raise AccountingServiceError(f"ثبت خرید ناموفق بود: {exc}", cause=exc)
 
@@ -341,11 +341,7 @@ class LocalAccountingService:
         return results
 
     def today_sales_total_rial(self) -> int:
-        # Align "today" with UTC date to match naive-UTC timestamps stored
-        # by models._utcnow_naive (technical-conventions: Gregorian storage).
-        today = datetime.now(timezone.utc).date()
-        start = datetime.combine(today, time.min)
-        end = datetime.combine(today, time.max)
+        start, end = today_bounds_naive_utc()
         rows = Receipt.select().where(
             (Receipt.timestamp >= start) & (Receipt.timestamp <= end)
         )
