@@ -19,7 +19,10 @@ def service():
 
 
 def _make_vendor_contact(name="فروشنده تست", mobile="09120000000"):
-    return Contact.create(name=name, mobile=mobile, contact_type="vendor")
+    # is_customer/is_vendor flags (contact_type removed — see contacts-mvs-spec)
+    return Contact.create(
+        name=name, mobile=mobile, is_customer=False, is_vendor=True
+    )
 
 
 def test_create_and_list_item(service):
@@ -139,7 +142,7 @@ def test_item_vendor_cleared_when_contact_deleted(service):
 
 
 def test_contact_service_lists_only_vendors():
-    Contact.create(name="مشتری عادی", contact_type="customer")
+    Contact.create(name="مشتری عادی", is_customer=True, is_vendor=False)
     vendor = _make_vendor_contact(name="تامین‌کننده لوازم اداری")
 
     vendors = LocalContactService().list_vendors()
