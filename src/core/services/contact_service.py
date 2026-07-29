@@ -21,6 +21,7 @@ from src.apps.contacts.duplicate_logic import (
     normalize_email as _norm_email,
     normalize_name as _norm_name,
     normalize_phone as _dup_norm_phone,
+    phone_match_keys,
 )
 from src.apps.contacts.vcf import (
     MAX_VCF_BYTES,
@@ -347,12 +348,10 @@ class LocalContactService:
         name_entries: list[tuple[str, str]] = []  # (name, id_str)
         for c in self.list_contacts():
             by_id[c.id] = c
-            m = normalize_phone(c.mobile)
-            p = normalize_phone(c.phone)
-            if m and m not in by_mobile:
-                by_mobile[m] = c
-            if p and p not in by_phone:
-                by_phone[p] = c
+            for key in phone_match_keys(c.mobile):
+                by_mobile.setdefault(key, c)
+            for key in phone_match_keys(c.phone):
+                by_phone.setdefault(key, c)
             em = _norm_email(c.email)
             if em and em not in by_email:
                 by_email[em] = c
@@ -481,12 +480,10 @@ class LocalContactService:
                         )
                         created += 1
                         # keep index fresh within batch
-                        m = normalize_phone(dto.mobile)
-                        p = normalize_phone(dto.phone)
-                        if m:
-                            by_mobile[m] = dto
-                        if p:
-                            by_phone[p] = dto
+                        for key in phone_match_keys(dto.mobile):
+                            by_mobile[key] = dto
+                        for key in phone_match_keys(dto.phone):
+                            by_phone[key] = dto
                         em = (dto.email or "").strip().lower()
                         if em:
                             by_email[em] = dto
