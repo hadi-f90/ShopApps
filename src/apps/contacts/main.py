@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -16,6 +19,10 @@ from src.core.services.contact_service import (
     ContactServiceError,
     LocalContactService,
 )
+
+
+def _err(exc: Exception) -> str:
+    return getattr(exc, "message_fa", None) or str(exc)
 
 
 class ContactsManager(QWidget):
@@ -40,16 +47,22 @@ class ContactsManager(QWidget):
         self.add_btn = QPushButton("➕ افزودن مخاطب")
         self.edit_btn = QPushButton("✏️ ویرایش")
         self.delete_btn = QPushButton("🗑️ حذف")
+        self.import_btn = QPushButton("📥 ورود VCF")
+        self.export_btn = QPushButton("📤 خروجی VCF")
         self.refresh_btn = QPushButton("🔄 بروزرسانی")
 
         self.add_btn.clicked.connect(self.add_contact)
         self.edit_btn.clicked.connect(self.edit_contact)
         self.delete_btn.clicked.connect(self.delete_contact)
+        self.import_btn.clicked.connect(self.import_vcf)
+        self.export_btn.clicked.connect(self.export_vcf)
         self.refresh_btn.clicked.connect(self.load_data)
 
         toolbar.addWidget(self.add_btn)
         toolbar.addWidget(self.edit_btn)
         toolbar.addWidget(self.delete_btn)
+        toolbar.addWidget(self.import_btn)
+        toolbar.addWidget(self.export_btn)
         toolbar.addWidget(self.refresh_btn)
         toolbar.addStretch()
         layout.addLayout(toolbar)
@@ -107,7 +120,7 @@ class ContactsManager(QWidget):
         try:
             contact = self.service.get_contact(contact_id)
         except ContactServiceError as exc:
-            QMessageBox.warning(self, "خطا", str(exc))
+            QMessageBox.warning(self, "خطا", _err(exc))
             return
         dialog = ContactForm(self, contact=contact, service=self.service)
         if dialog.exec():
@@ -125,9 +138,53 @@ class ContactsManager(QWidget):
             try:
                 self.service.delete_contact(contact_id)
             except ContactServiceError as exc:
-                QMessageBox.warning(self, "خطا", str(exc))
+                QMessageBox.warning(self, "خطا", _err(exc))
                 return
             self.load_data()
+
+    def import_vcf(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "ورود از فایل VCF",
+            "",
+            "vCard (*.vcf *.vcard);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            report = self.service.import_vcf(path)
+        except ContactServiceError as exc:
+            QMessageBox.warning(self, "خطا", _err(exc))
+            return
+        msg = f"وارد شد: {report.created}"
+        if report.skipped:
+            msg += f"\nرد شد (بدون نام یا نامعتبر): {report.skipped}"
+        if report.errors:
+            msg += "\n" + "\n".join(report.errors)
+        QMessageBox.information(self, "ورود VCF", msg)
+        self.load_data()
+
+    def export_vcf(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "خروجی VCF",
+            "contacts.vcf",
+            "vCard (*.vcf);;All files (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".vcf"):
+            path += ".vcf"
+        try:
+            text = self.service.export_vcf()
+            Path(path).write_text(text, encoding="utf-8")
+        except ContactServiceError as exc:
+            QMessageBox.warning(self, "خطا", _err(exc))
+            return
+        except OSError as exc:
+            QMessageBox.warning(self, "خطا", f"ذخیره فایل ممکن نشد: {exc}")
+            return
+        QMessageBox.information(self, "خروجی VCF", f"ذخیره شد:\n{path}")
 
     def refresh(self):
         """Called from MainWindow.switch_to_module after navigation."""
