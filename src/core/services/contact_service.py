@@ -14,6 +14,14 @@ from typing import List, Optional, Protocol, Sequence, Union
 
 from peewee import DoesNotExist
 
+from src.apps.contacts.duplicate_logic import (
+    DEFAULT_NAME_THRESHOLD,
+    cluster_duplicates,
+    match_against_index,
+    normalize_email as _norm_email,
+    normalize_name as _norm_name,
+    normalize_phone as _dup_norm_phone,
+)
 from src.apps.contacts.vcf import (
     MAX_VCF_BYTES,
     VCardData,
@@ -76,7 +84,8 @@ class VcfPreviewRow:
     card: VCardData
     match_id: Optional[int] = None
     match_name: str = ""
-    match_reason: str = ""  # mobile | phone | email
+    match_reason: str = ""  # mobile | phone | email | name_fuzzy
+    match_score: float = 0.0
 
 
 class ContactService(Protocol):
@@ -130,6 +139,22 @@ class ContactService(Protocol):
         default_is_customer: bool = True,
         default_is_vendor: bool = False,
     ) -> VcfImportReport: ...
+
+
+    def find_duplicate_groups(
+        self, *, name_threshold: float = DEFAULT_NAME_THRESHOLD
+    ) -> list[list[ContactDTO]]:
+        """Groups of existing contacts that look like duplicates (exact or fuzzy name)."""
+        contacts = self.list_contacts()
+        return cluster_duplicates(
+            contacts,
+            get_id=lambda c: c.id or 0,
+            get_mobile=lambda c: c.mobile,
+            get_phone=lambda c: c.phone,
+            get_email=lambda c: c.email,
+            get_name=lambda c: c.name,
+            name_threshold=name_threshold,
+        )
 
     def export_vcf(self, contact_ids: Optional[List[int]] = None) -> str: ...
 
@@ -313,22 +338,27 @@ class LocalContactService:
                 continue
         return raw.decode("latin-1", errors="replace")
 
-    def _build_dup_index(self) -> tuple[dict[str, ContactDTO], dict[str, ContactDTO], dict[str, ContactDTO]]:
-        """Single pass over DB → mobile / phone / email indexes (normalized)."""
+    def _build_dup_index(self):
+        """Indexes for exact fields + name list for fuzzy match."""
         by_mobile: dict[str, ContactDTO] = {}
         by_phone: dict[str, ContactDTO] = {}
         by_email: dict[str, ContactDTO] = {}
+        by_id: dict[int, ContactDTO] = {}
+        name_entries: list[tuple[str, str]] = []  # (name, id_str)
         for c in self.list_contacts():
+            by_id[c.id] = c
             m = normalize_phone(c.mobile)
             p = normalize_phone(c.phone)
             if m and m not in by_mobile:
                 by_mobile[m] = c
             if p and p not in by_phone:
                 by_phone[p] = c
-            em = (c.email or "").strip().lower()
+            em = _norm_email(c.email)
             if em and em not in by_email:
                 by_email[em] = c
-        return by_mobile, by_phone, by_email
+            if c.name:
+                name_entries.append((c.name, str(c.id)))
+        return by_mobile, by_phone, by_email, by_id, name_entries
 
     def _match_card(
         self,
@@ -336,17 +366,26 @@ class LocalContactService:
         by_mobile: dict,
         by_phone: dict,
         by_email: dict,
-    ) -> tuple[Optional[ContactDTO], str]:
-        m = normalize_phone(card.mobile)
-        if m and m in by_mobile:
-            return by_mobile[m], "mobile"
-        p = normalize_phone(card.phone)
-        if p and p in by_phone:
-            return by_phone[p], "phone"
-        em = (card.email or "").strip().lower()
-        if em and em in by_email:
-            return by_email[em], "email"
-        return None, ""
+        by_id: dict,
+        name_entries: list,
+        *,
+        name_threshold: float = DEFAULT_NAME_THRESHOLD,
+    ) -> tuple[Optional[ContactDTO], str, float]:
+        mr = match_against_index(
+            mobile=card.mobile,
+            phone=card.phone,
+            email=card.email,
+            name=card.name,
+            by_mobile={k: str(v.id) for k, v in by_mobile.items()},
+            by_phone={k: str(v.id) for k, v in by_phone.items()},
+            by_email={k: str(v.id) for k, v in by_email.items()},
+            name_entries=name_entries,
+            name_threshold=name_threshold,
+        )
+        if not mr:
+            return None, "", 0.0
+        dto = by_id.get(int(mr.key))
+        return dto, mr.reason, mr.score
 
     def preview_vcf(
         self, source: Union[str, Path, bytes]
@@ -356,10 +395,12 @@ class LocalContactService:
         if parsed.errors and not parsed.cards:
             raise ContactServiceError("؛ ".join(parsed.errors))
 
-        by_mobile, by_phone, by_email = self._build_dup_index()
+        by_mobile, by_phone, by_email, by_id, name_entries = self._build_dup_index()
         rows: list[VcfPreviewRow] = []
         for i, card in enumerate(parsed.cards):
-            match, reason = self._match_card(card, by_mobile, by_phone, by_email)
+            match, reason, score = self._match_card(
+                card, by_mobile, by_phone, by_email, by_id, name_entries
+            )
             rows.append(
                 VcfPreviewRow(
                     index=i,
@@ -367,6 +408,7 @@ class LocalContactService:
                     match_id=match.id if match else None,
                     match_name=match.name if match else "",
                     match_reason=reason,
+                    match_score=score,
                 )
             )
         return rows, tuple(parsed.errors)
@@ -410,7 +452,7 @@ class LocalContactService:
         if duplicate_policy not in (DUP_SKIP, DUP_MERGE, DUP_CREATE):
             duplicate_policy = DUP_SKIP
 
-        by_mobile, by_phone, by_email = self._build_dup_index()
+        by_mobile, by_phone, by_email, by_id, name_entries = self._build_dup_index()
         created = merged = skipped = 0
         errors: list[str] = []
 
@@ -419,7 +461,9 @@ class LocalContactService:
                 if not (card.name or "").strip():
                     skipped += 1
                     continue
-                match, _reason = self._match_card(card, by_mobile, by_phone, by_email)
+                match, _reason, _score = self._match_card(
+                    card, by_mobile, by_phone, by_email, by_id, name_entries
+                )
                 try:
                     if match is None or duplicate_policy == DUP_CREATE:
                         dto = self.create_contact(
@@ -480,6 +524,22 @@ class LocalContactService:
             duplicate_policy=duplicate_policy,
             default_is_customer=default_is_customer,
             default_is_vendor=default_is_vendor,
+        )
+
+
+    def find_duplicate_groups(
+        self, *, name_threshold: float = DEFAULT_NAME_THRESHOLD
+    ) -> list[list[ContactDTO]]:
+        """Groups of existing contacts that look like duplicates (exact or fuzzy name)."""
+        contacts = self.list_contacts()
+        return cluster_duplicates(
+            contacts,
+            get_id=lambda c: c.id or 0,
+            get_mobile=lambda c: c.mobile,
+            get_phone=lambda c: c.phone,
+            get_email=lambda c: c.email,
+            get_name=lambda c: c.name,
+            name_threshold=name_threshold,
         )
 
     def export_vcf(self, contact_ids: Optional[List[int]] = None) -> str:

@@ -1,4 +1,4 @@
-"""Selective VCF import dialog: pick rows, bulk select, duplicate policy."""
+"""پنجره انتخاب مخاطبین از فایل VCF برای ورود انتخابی."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -27,9 +28,16 @@ from src.core.services.contact_service import (
 
 COL_CHECK, COL_NAME, COL_MOBILE, COL_PHONE, COL_EMAIL, COL_ORG, COL_STATUS = range(7)
 
+REASON_FA = {
+    "mobile": "موبایل یکسان",
+    "phone": "تلفن یکسان",
+    "email": "ایمیل یکسان",
+    "name_fuzzy": "نام مشابه",
+}
+
 
 class VcfImportDialog(QDialog):
-    """Show parsed VCF cards; user chooses which to import and duplicate policy."""
+    """نمایش کارت‌های استخراج‌شده از VCF برای انتخاب و تعیین رفتار تکراری‌ها."""
 
     def __init__(self, rows: list[VcfPreviewRow], parent=None):
         super().__init__(parent)
@@ -53,7 +61,9 @@ class VcfImportDialog(QDialog):
         policy_row.addWidget(QLabel("در صورت تکراری بودن:"))
         self.policy_combo = QComboBox()
         self.policy_combo.addItem("رد کردن (وارد نشود)", DUP_SKIP)
-        self.policy_combo.addItem("ادغام با مخاطب موجود (پر کردن فیلدهای خالی)", DUP_MERGE)
+        self.policy_combo.addItem(
+            "ادغام با مخاطب موجود (پر کردن فیلدهای خالی)", DUP_MERGE
+        )
         self.policy_combo.addItem("ایجاد به‌عنوان مخاطب جدید", DUP_CREATE)
         policy_row.addWidget(self.policy_combo, 1)
         layout.addLayout(policy_row)
@@ -95,7 +105,6 @@ class VcfImportDialog(QDialog):
                     | Qt.ItemFlag.ItemIsEnabled
                     | Qt.ItemFlag.ItemIsSelectable
                 )
-                # Default: select non-duplicates only
                 check.setCheckState(
                     Qt.CheckState.Unchecked
                     if row.match_id
@@ -108,12 +117,16 @@ class VcfImportDialog(QDialog):
                 self.table.setItem(i, COL_EMAIL, QTableWidgetItem(row.card.email))
                 self.table.setItem(i, COL_ORG, QTableWidgetItem(row.card.organization))
                 if row.match_id:
-                    reason_fa = {
-                        "mobile": "موبایل",
-                        "phone": "تلفن",
-                        "email": "ایمیل",
-                    }.get(row.match_reason, row.match_reason)
-                    status = f"تکراری ({reason_fa}) → {row.match_name} #{row.match_id}"
+                    reason_fa = REASON_FA.get(row.match_reason, row.match_reason)
+                    score_txt = (
+                        f" ({row.match_score:.0%})"
+                        if row.match_reason == "name_fuzzy" and row.match_score
+                        else ""
+                    )
+                    status = (
+                        f"تکراری — {reason_fa}{score_txt} → "
+                        f"{row.match_name} (شماره {row.match_id})"
+                    )
                 else:
                     status = "جدید"
                 self.table.setItem(i, COL_STATUS, QTableWidgetItem(status))
@@ -166,6 +179,9 @@ class VcfImportDialog(QDialog):
             if item and item.checkState() == Qt.CheckState.Checked:
                 selected.append(row.card)
         if not selected:
-            return  # keep dialog open — user must pick at least one
+            QMessageBox.warning(
+                self, "انتخاب لازم است", "حداقل یک مخاطب را برای ورود انتخاب کنید."
+            )
+            return
         self.selected_cards = selected
         self.accept()
