@@ -13,12 +13,16 @@ interconnections.
 - Basic PySide6 (Qt Widgets) main window + sidebar navigation.
 - RTL/Farsi support + theming.
 - Config loading (dotenv).
+- **UI polish (MVS):** page title on each sub-app screen; highlight active
+  sidebar button (see `design/sidebar-navigation-design.md`).
 - See `.ai_files/technical-conventions.md` for the full set of locked
   technical decisions (currency, dates, stack) this roadmap assumes.
 
 ### 2. Contacts Manager (MVS)
 - CRUD contacts (name, phone, email, address, `is_customer`/`is_vendor`
   flags, tags).
+- **Phone normalization on save:** strip spaces/separators from pasted
+  phone/mobile values before storing.
 - VCF import/export (basic).
 - Search/filter.
 - Shared DB access.
@@ -61,6 +65,19 @@ item sale → receipt → stock update).
 - Social: Real SMS/IM integration (Twilio/API).
 - Cython performance for large inventories (only after profiling shows a
   real bottleneck).
+- **Contacts — structured name fields (optional):** split `name` into
+  `first_name` / `last_name` (or keep a single “full name” display with
+  optional parts). **Not required for Iranian shop workflow** where a single
+  full name + organization is usually enough; only add if CRM/export needs
+  it. Requires migration + VCF mapping update.
+- **Contacts — social media usernames:** optional fields (e.g. Telegram,
+  Instagram, WhatsApp, LinkedIn) or a small related table
+  `ContactSocial(platform, username)`. Needs Product spec + migration;
+  useful for Phase 2 messaging/outreach, not for MVS sales loop.
+- **Contacts — stricter phone validation:** Iranian mobile format checks
+  (09xxxxxxxxx) after normalization.
+- UI: Model/View tables for Contacts/Accounting lists; Persian digit option;
+  collapsible sidebar.
 
 ### Phase 3: Advanced Business Features
 - Full CRM: Purchase history, loyalty.

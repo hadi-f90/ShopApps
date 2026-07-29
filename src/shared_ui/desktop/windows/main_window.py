@@ -77,21 +77,40 @@ def create_app_stylesheet():
         QLabel#sidebar-title {
             font-size: 24px; font-weight: bold; padding: 20px; color: white;
         }
-        QPushButton {
+        /* Default nav buttons */
+        QFrame#sidebar QPushButton {
             background-color: #2c3e50; color: white; border: none;
             padding: 14px 20px; qproperty-layoutDirection: RightToLeft;
             qproperty-iconSize: 16px 16px; text-align: center;
             font-size: 15px; font-weight: 500;
+            border-right: 4px solid transparent;
         }
-        QPushButton:hover { background-color: #34495e; }
-        QPushButton:pressed { background-color: #1a252f; }
+        QFrame#sidebar QPushButton:hover { background-color: #34495e; }
+        QFrame#sidebar QPushButton:pressed { background-color: #1a252f; }
+        /* Active module — matches sidebar-navigation-design.md */
+        QFrame#sidebar QPushButton#nav-active {
+            background-color: #1a252f;
+            border-right: 4px solid #3498db;
+            font-weight: 700;
+        }
         QFrame#dash-card {
             background-color: white; border-radius: 8px;
             border: 1px solid #e0e0e0; padding: 16px;
         }
         QLabel#dash-value { font-size: 22px; font-weight: bold; color: #2c3e50; }
         QLabel#dash-title { font-size: 13px; color: #666; }
+        QLabel#page-title {
+            font-size: 20px; font-weight: bold; color: #2c3e50;
+            padding: 4px 0 12px 0;
+        }
     """
+
+
+def make_page_title(text: str) -> QLabel:
+    """Shared page heading used by Dashboard and every sub-app."""
+    label = QLabel(text)
+    label.setObjectName("page-title")
+    return label
 
 
 class DashboardPage(QWidget):
@@ -107,9 +126,7 @@ class DashboardPage(QWidget):
         self.inventory = inventory
         self.accounting = accounting
         layout = QVBoxLayout(self)
-        title = QLabel("🏠 داشبورد")
-        title.setStyleSheet("font-size: 20px; font-weight: bold;")
-        layout.addWidget(title)
+        layout.addWidget(make_page_title("🏠 داشبورد"))
 
         cards_row = QHBoxLayout()
         self.low_stock_card = self._make_card("موجودی کم", "—")
@@ -158,9 +175,7 @@ class DashboardPage(QWidget):
         try:
             total_rial = self.accounting.today_sales_total_rial()
             toman = logic.rial_to_toman(total_rial)
-            self._set_card_value(
-                self.sales_card, f"{toman:,} تومان"
-            )
+            self._set_card_value(self.sales_card, f"{toman:,} تومان")
         except Exception:
             self._set_card_value(self.sales_card, "—")
 
@@ -176,7 +191,6 @@ class MainWindow(QMainWindow):
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.resize(1280, 800)
 
-        # Shared service instances (single process)
         self.contact_service = LocalContactService()
         self.inventory_service = LocalInventoryService(
             contact_service=self.contact_service
@@ -192,6 +206,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        self._nav_buttons: list[QPushButton] = []
         self.sidebar = self.create_sidebar()
         main_layout.addWidget(self.sidebar)
 
@@ -235,26 +250,34 @@ class MainWindow(QMainWindow):
                 btn = QPushButton(f"{label}")
             btn.clicked.connect(lambda _, idx=index: self.switch_to_module(idx))
             layout.addWidget(btn)
+            self._nav_buttons.append(btn)
 
         layout.addStretch()
         return frame
 
+    def _highlight_nav(self, active_index: int):
+        for i, btn in enumerate(self._nav_buttons):
+            if i == active_index:
+                btn.setObjectName("nav-active")
+            else:
+                btn.setObjectName("")
+            # Force style re-polish after objectName change
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            btn.update()
+
     def setup_modules(self):
-        # 0 Dashboard
         self.dashboard = DashboardPage(
             self.inventory_service, self.accounting_service
         )
         self.content_stack.addWidget(self.dashboard)
 
-        # 1 Inventory
         self.inventory_page = InventoryManager(service=self.inventory_service)
         self.content_stack.addWidget(self.inventory_page)
 
-        # 2 Contacts
         self.contacts_page = ContactsManager(service=self.contact_service)
         self.content_stack.addWidget(self.contacts_page)
 
-        # 3 Accounting
         self.accounting_page = AccountingManager(
             accounting=self.accounting_service,
             inventory=self.inventory_service,
@@ -262,29 +285,30 @@ class MainWindow(QMainWindow):
         )
         self.content_stack.addWidget(self.accounting_page)
 
-        # 4 Reports (Phase 2 placeholder)
         reports = QWidget()
-        QVBoxLayout(reports).addWidget(
-            QLabel("گزارش‌ها\n\nفاز ۲ — در حال توسعه...")
-        )
+        r_layout = QVBoxLayout(reports)
+        r_layout.addWidget(make_page_title("📊 گزارش‌ها"))
+        r_layout.addWidget(QLabel("فاز ۲ — در حال توسعه..."))
+        r_layout.addStretch()
         self.content_stack.addWidget(reports)
 
-        # 5 Social (placeholder)
         social = QWidget()
-        QVBoxLayout(social).addWidget(
-            QLabel("شبکه‌های اجتماعی\n\nدر حال توسعه...")
-        )
+        s_layout = QVBoxLayout(social)
+        s_layout.addWidget(make_page_title("💬 شبکه‌های اجتماعی"))
+        s_layout.addWidget(QLabel("در حال توسعه..."))
+        s_layout.addStretch()
         self.content_stack.addWidget(social)
 
-        # 6 Settings
         settings = QWidget()
-        QVBoxLayout(settings).addWidget(
-            QLabel("📦 پیکربندی\n\nدر حال توسعه...")
-        )
+        st_layout = QVBoxLayout(settings)
+        st_layout.addWidget(make_page_title("⚙️ پیکربندی"))
+        st_layout.addWidget(QLabel("در حال توسعه..."))
+        st_layout.addStretch()
         self.content_stack.addWidget(settings)
 
     def switch_to_module(self, index):
         self.content_stack.setCurrentIndex(index)
+        self._highlight_nav(index)
         if index == 0:
             self.dashboard.refresh()
 

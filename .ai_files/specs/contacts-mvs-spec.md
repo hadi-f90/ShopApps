@@ -16,6 +16,8 @@ for sales and purchases at Karrayan Office Equipment Store.
      - [ ] Searchable table list of all contacts, filterable by
        customer/vendor
      - [ ] Basic VCF import/export functionality
+     - [ ] Phone/mobile values are normalized on save (spaces and common
+       separators stripped) so paste-from-clipboard does not store messy numbers
 
 2. As a Store User, I want to quickly find a contact when creating a receipt,
    so that sales are fast.
@@ -26,16 +28,23 @@ for sales and purchases at Karrayan Office Equipment Store.
 ## In Scope (MVS)
 - CRUD operations for contacts
 - Simple search and filtering
+- Phone/mobile normalization on save (strip whitespace/separators)
 - VCF basic import/export
 - Shared database access for use by Accounting & other modules
+- Single full-name field (not first/last split) — matches common Iranian
+  retail practice (name + organization)
 
 ## Out of Scope (MVS)
 - Advanced CRM features (purchase history, loyalty points)
 - Bulk import from Excel
 - Email/SMS integration
 - Photo attachment for contacts
+- Social media usernames (Telegram, Instagram, etc.) — **Phase 2**
+- First name / last name split — **Phase 2** (optional; see roadmap)
 - Duplicate-contact detection on VCF import (e.g. matching by phone number) —
   deferred; MVS import may create duplicates that must be merged manually
+- Strict Iranian mobile format validation (beyond stripping separators) —
+  Phase 2
 
 ## Assumptions
 - Uses shared Peewee models (see Database Agent skill / `core/models/`)
@@ -49,7 +58,10 @@ for sales and purchases at Karrayan Office Equipment Store.
 - None outstanding for MVS. (Previously open: "type field vs. tabs" — resolved
   above under Assumptions. "Default required fields" — name and at least one
   of phone/email required; all else optional for MVS.)
+- First/last name split: deferred to Phase 2; default remains single `name`.
 
 ## Revision Notes
 - Revised: replaced single customer/vendor type with independent flags;
   closed the open question that contradicted the acceptance criteria.
+- Revised: phone normalization on save added to MVS; social usernames and
+  name-part split listed under Out of Scope / Phase 2.
