@@ -1,8 +1,11 @@
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -20,6 +23,14 @@ from src.core.services.contact_service import (
     LocalContactService,
 )
 
+# Page size keeps QTableWidget responsive for large imports (VCF).
+# Full Model/View + DB offset is Phase 2 if lists grow into tens of thousands.
+PAGE_SIZE = 100
+
+# Column indices
+COL_ID, COL_NAME, COL_PHONE, COL_MOBILE, COL_EMAIL, COL_ORG = range(6)
+COL_CUSTOMER, COL_VENDOR, COL_TAGS, COL_TASKS = 6, 7, 8, 9
+
 
 def _err(exc: Exception) -> str:
     return getattr(exc, "message_fa", None) or str(exc)
@@ -29,6 +40,8 @@ class ContactsManager(QWidget):
     def __init__(self, service: ContactService = None, parent=None):
         super().__init__(parent)
         self.service = service or LocalContactService()
+        self._page = 0
+        self._all_filtered = []  # ContactDTO cache for current search
         layout = QVBoxLayout(self)
 
         title = QLabel("👥 مخاطبین")
@@ -53,10 +66,10 @@ class ContactsManager(QWidget):
 
         self.add_btn.clicked.connect(self.add_contact)
         self.edit_btn.clicked.connect(self.edit_contact)
-        self.delete_btn.clicked.connect(self.delete_contact)
+        self.delete_btn.clicked.connect(self.delete_contacts)
         self.import_btn.clicked.connect(self.import_vcf)
         self.export_btn.clicked.connect(self.export_vcf)
-        self.refresh_btn.clicked.connect(self.load_data)
+        self.refresh_btn.clicked.connect(lambda: self.load_data(reset_page=True))
 
         toolbar.addWidget(self.add_btn)
         toolbar.addWidget(self.edit_btn)
@@ -68,7 +81,7 @@ class ContactsManager(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(9)
+        self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels(
             [
                 "ID",
@@ -80,45 +93,142 @@ class ContactsManager(QWidget):
                 "مشتری",
                 "فروشنده",
                 "تگ‌ها",
+                "تسک‌ها",
             ]
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self._apply_column_widths()
         layout.addWidget(self.table)
 
-        self.load_data()
+        pager = QHBoxLayout()
+        self.prev_btn = QPushButton("▶ قبلی")
+        self.next_btn = QPushButton("بعدی ◀")
+        self.page_label = QLabel("")
+        self.prev_btn.clicked.connect(self._prev_page)
+        self.next_btn.clicked.connect(self._next_page)
+        pager.addWidget(self.prev_btn)
+        pager.addWidget(self.page_label)
+        pager.addWidget(self.next_btn)
+        pager.addStretch()
+        layout.addLayout(pager)
 
-    def load_data(self, filter_text: str = ""):
-        self.table.setRowCount(0)
+        self.load_data(reset_page=True)
+
+    def _apply_column_widths(self):
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        # Fixed narrow columns
+        header.setSectionResizeMode(COL_ID, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(COL_ID, 48)
+        header.setSectionResizeMode(COL_CUSTOMER, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(COL_CUSTOMER, 52)
+        header.setSectionResizeMode(COL_VENDOR, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(COL_VENDOR, 58)
+        # Stretch name, tags, tasks
+        header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COL_TAGS, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COL_TASKS, QHeaderView.ResizeMode.Stretch)
+        # Moderate defaults for the rest
+        for col, width in (
+            (COL_PHONE, 100),
+            (COL_MOBILE, 110),
+            (COL_EMAIL, 140),
+            (COL_ORG, 120),
+        ):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            self.table.setColumnWidth(col, width)
+
+    def load_data(self, filter_text: str = "", *, reset_page: bool = False):
+        if reset_page:
+            self._page = 0
         text = filter_text if filter_text else self.search_edit.text()
-        contacts = self.service.list_contacts(search=text)
-        for row, c in enumerate(contacts):
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(str(c.id)))
-            self.table.setItem(row, 1, QTableWidgetItem(c.name))
-            self.table.setItem(row, 2, QTableWidgetItem(c.phone))
-            self.table.setItem(row, 3, QTableWidgetItem(c.mobile))
-            self.table.setItem(row, 4, QTableWidgetItem(c.email))
-            self.table.setItem(row, 5, QTableWidgetItem(c.organization))
-            self.table.setItem(row, 6, QTableWidgetItem("✓" if c.is_customer else ""))
-            self.table.setItem(row, 7, QTableWidgetItem("✓" if c.is_vendor else ""))
-            self.table.setItem(row, 8, QTableWidgetItem(c.tags))
+        self._all_filtered = list(self.service.list_contacts(search=text))
+        self._render_page()
+
+    def _render_page(self):
+        total = len(self._all_filtered)
+        pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE) if total else 1
+        if self._page >= pages:
+            self._page = max(0, pages - 1)
+        start = self._page * PAGE_SIZE
+        chunk = self._all_filtered[start : start + PAGE_SIZE]
+
+        self.table.setRowCount(0)
+        self.table.setUpdatesEnabled(False)
+        try:
+            for row, c in enumerate(chunk):
+                self.table.insertRow(row)
+                id_item = QTableWidgetItem(str(c.id))
+                id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, COL_ID, id_item)
+                self.table.setItem(row, COL_NAME, QTableWidgetItem(c.name))
+                self.table.setItem(row, COL_PHONE, QTableWidgetItem(c.phone))
+                self.table.setItem(row, COL_MOBILE, QTableWidgetItem(c.mobile))
+                self.table.setItem(row, COL_EMAIL, QTableWidgetItem(c.email))
+                self.table.setItem(row, COL_ORG, QTableWidgetItem(c.organization))
+                cust = QTableWidgetItem("✓" if c.is_customer else "")
+                cust.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, COL_CUSTOMER, cust)
+                vend = QTableWidgetItem("✓" if c.is_vendor else "")
+                vend.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, COL_VENDOR, vend)
+                self.table.setItem(row, COL_TAGS, QTableWidgetItem(c.tags or ""))
+                self.table.setItem(row, COL_TASKS, QTableWidgetItem(c.tasks or ""))
+        finally:
+            self.table.setUpdatesEnabled(True)
+
+        shown_from = start + 1 if total else 0
+        shown_to = min(start + PAGE_SIZE, total)
+        self.page_label.setText(
+            f"{shown_from}–{shown_to} از {total}  |  صفحه {self._page + 1} / {pages}"
+        )
+        self.prev_btn.setEnabled(self._page > 0)
+        self.next_btn.setEnabled(self._page < pages - 1)
+
+    def _prev_page(self):
+        if self._page > 0:
+            self._page -= 1
+            self._render_page()
+
+    def _next_page(self):
+        self._page += 1
+        self._render_page()
 
     def filter_contacts(self, text: str):
-        self.load_data(text)
+        self.load_data(text, reset_page=True)
+
+    def _selected_ids(self) -> list[int]:
+        rows = {idx.row() for idx in self.table.selectedIndexes()}
+        ids: list[int] = []
+        for row in sorted(rows):
+            item = self.table.item(row, COL_ID)
+            if item:
+                ids.append(int(item.text()))
+        return ids
 
     def add_contact(self):
         dialog = ContactForm(self, service=self.service)
         if dialog.exec():
-            self.load_data()
+            self.load_data(reset_page=True)
 
     def edit_contact(self):
-        row = self.table.currentRow()
-        if row < 0:
+        ids = self._selected_ids()
+        if not ids:
             QMessageBox.warning(self, "خطا", "یک مخاطب انتخاب کنید")
             return
-        contact_id = int(self.table.item(row, 0).text())
+        if len(ids) > 1:
+            QMessageBox.information(
+                self,
+                "ویرایش",
+                "برای ویرایش فقط یک ردیف را انتخاب کنید (حذف می‌تواند چندتایی باشد).",
+            )
+            return
         try:
-            contact = self.service.get_contact(contact_id)
+            contact = self.service.get_contact(ids[0])
         except ContactServiceError as exc:
             QMessageBox.warning(self, "خطا", _err(exc))
             return
@@ -126,21 +236,37 @@ class ContactsManager(QWidget):
         if dialog.exec():
             self.load_data()
 
-    def delete_contact(self):
-        row = self.table.currentRow()
-        if row < 0:
+    def delete_contacts(self):
+        ids = self._selected_ids()
+        if not ids:
+            QMessageBox.warning(self, "خطا", "حداقل یک مخاطب انتخاب کنید")
             return
-        if (
-            QMessageBox.question(self, "تایید حذف", "آیا از حذف این مخاطب مطمئن هستید؟")
-            == QMessageBox.Yes
-        ):
-            contact_id = int(self.table.item(row, 0).text())
+        n = len(ids)
+        prompt = (
+            f"آیا از حذف {n} مخاطب انتخاب‌شده مطمئن هستید؟"
+            if n > 1
+            else "آیا از حذف این مخاطب مطمئن هستید؟"
+        )
+        if QMessageBox.question(self, "تایید حذف", prompt) != QMessageBox.Yes:
+            return
+
+        failed: list[str] = []
+        deleted = 0
+        for cid in ids:
             try:
-                self.service.delete_contact(contact_id)
+                self.service.delete_contact(cid)
+                deleted += 1
             except ContactServiceError as exc:
-                QMessageBox.warning(self, "خطا", _err(exc))
-                return
-            self.load_data()
+                failed.append(f"#{cid}: {_err(exc)}")
+
+        if failed:
+            QMessageBox.warning(
+                self,
+                "حذف ناقص",
+                f"حذف شد: {deleted}\nناموفق:\n" + "\n".join(failed[:12])
+                + (f"\n… و {len(failed) - 12} مورد دیگر" if len(failed) > 12 else ""),
+            )
+        self.load_data()
 
     def import_vcf(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -162,7 +288,7 @@ class ContactsManager(QWidget):
         if report.errors:
             msg += "\n" + "\n".join(report.errors)
         QMessageBox.information(self, "ورود VCF", msg)
-        self.load_data()
+        self.load_data(reset_page=True)
 
     def export_vcf(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -176,7 +302,9 @@ class ContactsManager(QWidget):
         if not path.lower().endswith(".vcf"):
             path += ".vcf"
         try:
-            text = self.service.export_vcf()
+            # Export selection if any, otherwise all
+            ids = self._selected_ids() or None
+            text = self.service.export_vcf(ids)
             Path(path).write_text(text, encoding="utf-8")
         except ContactServiceError as exc:
             QMessageBox.warning(self, "خطا", _err(exc))
