@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.apps.contacts.forms import ContactForm
+from src.apps.contacts.import_dialog import VcfImportDialog
 from src.core.services.contact_service import (
     ContactService,
     ContactServiceError,
@@ -278,13 +279,31 @@ class ContactsManager(QWidget):
         if not path:
             return
         try:
-            report = self.service.import_vcf(path)
+            rows, parse_errors = self.service.preview_vcf(path)
         except ContactServiceError as exc:
             QMessageBox.warning(self, "خطا", _err(exc))
             return
-        msg = f"وارد شد: {report.created}"
+        if not rows:
+            QMessageBox.information(self, "ورود VCF", "مخاطبی در فایل یافت نشد.")
+            return
+        dlg = VcfImportDialog(rows, parent=self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        try:
+            report = self.service.import_vcf_cards(
+                dlg.selected_cards,
+                duplicate_policy=dlg.duplicate_policy,
+            )
+        except ContactServiceError as exc:
+            QMessageBox.warning(self, "خطا", _err(exc))
+            return
+        msg = f"ایجاد شد: {report.created}"
+        if report.merged:
+            msg += f"\nادغام شد: {report.merged}"
         if report.skipped:
-            msg += f"\nرد شد (بدون نام یا نامعتبر): {report.skipped}"
+            msg += f"\nرد شد: {report.skipped}"
+        if parse_errors:
+            msg += "\n" + "\n".join(parse_errors)
         if report.errors:
             msg += "\n" + "\n".join(report.errors)
         QMessageBox.information(self, "ورود VCF", msg)
